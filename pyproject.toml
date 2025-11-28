@@ -9,5 +9,9 @@ description = "Add your description here"
 requires-python = ">=3.13"
 dependencies = []
 
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
+
+
 [project.scripts]
-hickathon6 = "hickathon6.main:main"
+hickathon6 = "src.main:main"
