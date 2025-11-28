@@ -7,6 +7,7 @@ import numpy as np
 import wandb
 import joblib
 import os
+import pandas as pd
 
 # Imports locaux
 from src.infrastructure import ArtifactManager
@@ -16,7 +17,6 @@ from src.models import Encoder, SupervisedRegressor
 CONFIG = {
     "project_name": "ml_project_embedding",
     "group_name": "Supervised_Finetuning_Masked",
-    "dae_run_id": "REMPLACER_PAR_RUN_ID_DAE", 
     "seed": 42,
     "n_splits": 5,
     "batch_size": 1024,
@@ -39,16 +39,38 @@ CONFIG = {
 
 def load_data_and_targets():
     """
-    Simulation de données. 
-    IMPORTANT: Doit retourner les données brutes avec NaNs, comme pour le DAE.
+    Charge X et y depuis ../datas/
+    Retourne :
+        - X : Array NumPy (N, 110) float32
+        - Y : Array NumPy (N,) float32
     """
-    # X avec des NaNs
-    X = np.random.randn(10000, 110).astype(np.float32) * 50 + 20 
-    mask_nan = np.random.rand(*X.shape) < 0.2
-    X[mask_nan] = np.nan
+    # Chemins
+    x_path = os.path.join("..", "datas", "X_train.csv")
+    y_path = os.path.join("..", "datas", "y_train.csv")
     
-    # Y : Cible (Régression)
-    Y = (np.nan_to_num(X[:, 0]) * 2 + np.nan_to_num(X[:, 1]) * -0.5).astype(np.float32)
+    if not os.path.exists(x_path) or not os.path.exists(y_path):
+        raise FileNotFoundError(f"Fichiers introuvables dans ../datas/")
+
+    print("[Data] Chargement des CSV...")
+    
+    # 1. Chargement X
+    df_x = pd.read_csv(x_path)
+    X = df_x.to_numpy(dtype=np.float32)
+    
+    # 2. Chargement Y
+    df_y = pd.read_csv(y_path)
+    Y = df_y.to_numpy(dtype=np.float32)
+    
+    # 3. Nettoyage de la shape de Y
+    # Souvent read_csv renvoie (N, 1), mais PyTorch préfère (N,) pour les vecteurs cibles simples
+    if Y.ndim > 1:
+        Y = Y.squeeze() 
+        
+    # 4. Vérifications
+    assert len(X) == len(Y), f"Erreur: X a {len(X)} lignes, mais Y en a {len(Y)}"
+    assert X.shape[1] == 110, f"Erreur: X a {X.shape[1]} colonnes (attendu 110)"
+    
+    print(f"[Data] X: {X.shape}, Y: {Y.shape}")
     return X, Y
 
 def train_one_epoch(model, loader, criterion, optimizer, device):

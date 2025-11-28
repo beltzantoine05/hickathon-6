@@ -10,9 +10,57 @@ import wandb
 import copy
 import os
 import joblib
+import pandas as pd
 
-from src.infrastructure import ArtifactManager
-from src.models import DAE
+from infrastructure import ArtifactManager
+from models import DAE
+
+columns_to_load = [
+    # Reading average scores
+    'reading_q1_average_score', 'reading_q2_average_score', 'reading_q3_average_score',
+    'reading_q4_average_score', 'reading_q5_average_score', 'reading_q6_average_score',
+    'reading_q7_average_score', 'reading_q8_average_score', 'reading_q9_average_score',
+    'reading_q10_average_score', 'reading_q11_average_score', 'reading_q12_average_score',
+    'reading_q13_average_score', 'reading_q14_average_score', 'reading_q15_average_score',
+    # Math average scores
+    'math_q1_average_score', 'math_q2_average_score', 'math_q3_average_score',
+    'math_q4_average_score', 'math_q5_average_score', 'math_q6_average_score',
+    'math_q7_average_score', 'math_q8_average_score', 'math_q9_average_score',
+    'math_q10_average_score', 'math_q11_average_score', 'math_q12_average_score',
+    'math_q13_average_score', 'math_q14_average_score', 'math_q15_average_score',
+    'math_q16_average_score', 'math_q17_average_score', 'math_q18_average_score',
+    'math_q19_average_score', 'math_q20_average_score', 'math_q21_average_score',
+    # Science average scores
+    'science_q1_average_score', 'science_q2_average_score', 'science_q3_average_score',
+    'science_q4_average_score', 'science_q5_average_score', 'science_q6_average_score',
+    'science_q7_average_score', 'science_q8_average_score', 'science_q9_average_score',
+    'science_q10_average_score', 'science_q11_average_score', 'science_q12_average_score',
+    'science_q13_average_score', 'science_q14_average_score', 'science_q15_average_score',
+    'science_q16_average_score', 'science_q17_average_score', 'science_q18_average_score',
+    'science_q19_average_score',
+    # Reading total timing
+    'reading_q1_total_timing', 'reading_q2_total_timing', 'reading_q3_total_timing',
+    'reading_q4_total_timing', 'reading_q5_total_timing', 'reading_q6_total_timing',
+    'reading_q7_total_timing', 'reading_q8_total_timing', 'reading_q9_total_timing',
+    'reading_q10_total_timing', 'reading_q11_total_timing', 'reading_q12_total_timing',
+    'reading_q13_total_timing', 'reading_q14_total_timing', 'reading_q15_total_timing',
+    # Math total timing
+    'math_q1_total_timing', 'math_q2_total_timing', 'math_q3_total_timing',
+    'math_q4_total_timing', 'math_q5_total_timing', 'math_q6_total_timing',
+    'math_q7_total_timing', 'math_q8_total_timing', 'math_q9_total_timing',
+    'math_q10_total_timing', 'math_q11_total_timing', 'math_q12_total_timing',
+    'math_q13_total_timing', 'math_q14_total_timing', 'math_q15_total_timing',
+    'math_q16_total_timing', 'math_q17_total_timing', 'math_q18_total_timing',
+    'math_q19_total_timing', 'math_q20_total_timing', 'math_q21_total_timing',
+    # Science total timing
+    'science_q1_total_timing', 'science_q2_total_timing', 'science_q3_total_timing',
+    'science_q4_total_timing', 'science_q5_total_timing', 'science_q6_total_timing',
+    'science_q7_total_timing', 'science_q8_total_timing', 'science_q9_total_timing',
+    'science_q10_total_timing', 'science_q11_total_timing', 'science_q12_total_timing',
+    'science_q13_total_timing', 'science_q14_total_timing', 'science_q15_total_timing',
+    'science_q16_total_timing', 'science_q17_total_timing', 'science_q18_total_timing',
+    'science_q19_total_timing'
+]
 
 CONFIG = {
     "project_name": "ml_project_embedding",
@@ -30,14 +78,33 @@ CONFIG = {
 
 def load_data_with_nans():
     """
-    Simulation de données avec des NaNs.
+    Charge les features depuis ../datas/X_train.csv
+    Retourne : Array NumPy (N_samples, 110) en float32
     """
-    # 10k samples, 110 features
-    data = np.random.randn(10000, 110).astype(np.float32) * 50 + 20
-    # On force des NaNs aléatoirement (20% de manque)
-    mask_nan = np.random.rand(*data.shape) < 0.2
-    data[mask_nan] = np.nan
-    return data
+    # Chemin relatif vers le fichier
+    file_path = os.path.join("..", "datas", "X_train.csv")
+    
+    if not os.path.exists(file_path):
+        raise FileNotFoundError(f"Fichier introuvable : {file_path}")
+
+    print(f"[Data] Chargement de {file_path}...")
+    
+    # Lecture via Pandas
+    df = pd.read_csv(file_path)
+    
+    # --- Check Sécurité Dimensions ---
+    # Si ton CSV a une colonne index (ex: "Unnamed: 0"), il faut l'enlever.
+    # On suppose ici que toutes les colonnes sont des features.
+    if df.shape[1] != 110:
+        print(f"[Warn] Attention : {df.shape[1]} colonnes détectées (attendu: 110).")
+        # Si tu as une colonne index en trop, souvent c'est la première, tu peux décommenter ça :
+        # df = df.iloc[:, -110:] # On garde les 110 dernières
+    
+    # Conversion directe en NumPy float32 (Optimisé pour PyTorch)
+    X = df.to_numpy(dtype=np.float32)
+    
+    print(f"[Data] Loaded X shape: {X.shape} | Type: {X.dtype}")
+    return X
 
 def masked_mse_loss(input_recons, target, mask):
     """
