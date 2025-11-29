@@ -63,7 +63,7 @@ class RegressionTrainingConfig:
 
     batch_size: int = 1024
     lr_head_init: float = 1e-3
-    epochs_phase_1: int = 5
+    epochs_phase_1: int = 7
     lr_encoder: float = 3e-5
     lr_head_finetune: float = 3e-4
     epochs_phase_2: int = 20
@@ -97,7 +97,16 @@ class PipelineConfig:
     regression: RegressionTrainingConfig = field(default_factory=RegressionTrainingConfig)
     encoder_artifact_name: str = "dae-encoder-full"
     finetuned_encoder_artifact_name: str = "finetuned-encoder-full"
+    fold_encoder_artifact_prefix: str = "dae-encoder-fold"
+    finetuned_encoder_artifact_prefix: str = "finetuned-encoder-fold"
+    dae_model_artifact_name: str = "dae-model-full"
+    finetuned_model_artifact_name: str = "finetuned-model-full"
+    fold_dae_model_artifact_prefix: str = "dae-model-fold"
+    finetuned_model_artifact_prefix: str = "finetuned-model-fold"
+    load_fold_encoders_from_artifacts: bool = False
+    use_pretrained_full_encoder: bool = False
     use_gpu_if_available: bool = True
+    fold_indices: Optional[List[int]] = None
 
     def resolve_device(self) -> str:
         """Return the preferred device string based on availability."""
