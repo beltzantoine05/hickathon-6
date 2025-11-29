@@ -90,7 +90,7 @@ def load_data_with_nans():
     print(f"[Data] Chargement de {file_path}...")
     
     # Lecture via Pandas
-    df = pd.read_csv(file_path)
+    df = pd.read_csv(file_path, usecols=columns_to_load)
     
     # --- Check Sécurité Dimensions ---
     # Si ton CSV a une colonne index (ex: "Unnamed: 0"), il faut l'enlever.
