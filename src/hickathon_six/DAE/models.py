@@ -5,13 +5,20 @@ import torch
 import torch.nn as nn
 
 
-def _build_mlp(sizes: Iterable[int], activation: nn.Module, dropout: float | None = None) -> nn.Sequential:
+def _build_mlp(
+    sizes: Iterable[int],
+    activation: nn.Module,
+    dropout: float | None = None,
+    *,
+    apply_dropout_to_last: bool = True,
+) -> nn.Sequential:
     layers: List[nn.Module] = []
     sizes_list = list(sizes)
     for i in range(len(sizes_list) - 1):
         layers.append(nn.Linear(sizes_list[i], sizes_list[i + 1]))
         layers.append(type(activation)())
-        if dropout is not None and dropout > 0:
+        is_last = i == len(sizes_list) - 2
+        if dropout is not None and dropout > 0 and (apply_dropout_to_last or not is_last):
             layers.append(nn.Dropout(dropout))
     return nn.Sequential(*layers)
 
@@ -42,7 +49,12 @@ class FlexibleEncoder(nn.Module):
 
     def __init__(self, input_dim: int, hidden_sizes: List[int], dropout: float = 0.1):
         super().__init__()
-        self.net = _build_mlp([input_dim, *hidden_sizes], activation=nn.GELU(), dropout=dropout)
+        self.net = _build_mlp(
+            [input_dim, *hidden_sizes],
+            activation=nn.GELU(),
+            dropout=dropout,
+            apply_dropout_to_last=False,
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.net(x)
