@@ -13,7 +13,7 @@ class ArtifactManager:
     1. Stockage physique sur MinIO (Souveraineté des données)
     2. Versioning et Lineage sur W&B (Tracking)
     """
-    def __init__(self, bucket_name="ml-project-artifacts"):
+    def __init__(self, bucket_name=os.getenv("MINIO_BUCKET")):
         self.bucket = bucket_name
         self.s3_client = boto3.client(
             's3',
@@ -21,6 +21,10 @@ class ArtifactManager:
             aws_access_key_id=os.getenv('MINIO_ACCESS_KEY'),
             aws_secret_access_key=os.getenv('MINIO_SECRET_KEY'),
             aws_session_token=os.getenv('MINIO_SESSION_TOKEN', None)
+<<<<<<< HEAD
+=======
+
+>>>>>>> d635570b24e990906c9dbd89a82e2aa27306e8fa
         )
         self._ensure_bucket_exists()
 

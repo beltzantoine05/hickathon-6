@@ -82,7 +82,7 @@ def load_data_with_nans():
     2. Garde uniquement COLUMNS_TO_LOAD
     3. Supprime les lignes ayant >= 100 valeurs manquantes (sur les 110 colonnes)
     """
-    file_path = os.path.join("..", "datas", "X_train.csv")
+    file_path = os.path.join("datas", "X_train.csv")
     
     if not os.path.exists(file_path):
         raise FileNotFoundError(f"Fichier introuvable : {file_path}")

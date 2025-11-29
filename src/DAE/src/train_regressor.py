@@ -10,8 +10,8 @@ import os
 import pandas as pd
 
 # Imports locaux
-from src.infrastructure import ArtifactManager
-from src.models import Encoder, SupervisedRegressor
+from infrastructure import ArtifactManager
+from models import Encoder, SupervisedRegressor
 
 COLUMNS_TO_LOAD = [
     # Reading average scores
@@ -88,8 +88,8 @@ def load_data_and_targets():
     """
     Charge X et Y, filtre les colonnes, et applique la condition < 100 NaNs.
     """
-    x_path = os.path.join("..", "datas", "X_train.csv")
-    y_path = os.path.join("..", "datas", "y_train.csv")
+    x_path = os.path.join("datas", "X_train.csv")
+    y_path = os.path.join("datas", "y_train.csv")
     
     if not os.path.exists(x_path) or not os.path.exists(y_path):
         raise FileNotFoundError("Fichiers introuvables dans ../datas/")

@@ -5,4 +5,8 @@ __pycache__/
 X_train.csv
 y_train.csv
 temp*
+<<<<<<< HEAD
 src/__pycache__/main.cpython-313.pyc
+=======
+wandb/
+>>>>>>> d635570b24e990906c9dbd89a82e2aa27306e8fa
