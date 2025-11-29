@@ -13,6 +13,53 @@ import pandas as pd
 from src.infrastructure import ArtifactManager
 from src.models import Encoder, SupervisedRegressor
 
+COLUMNS_TO_LOAD = [
+    # Reading average scores
+    'reading_q1_average_score', 'reading_q2_average_score', 'reading_q3_average_score',
+    'reading_q4_average_score', 'reading_q5_average_score', 'reading_q6_average_score',
+    'reading_q7_average_score', 'reading_q8_average_score', 'reading_q9_average_score',
+    'reading_q10_average_score', 'reading_q11_average_score', 'reading_q12_average_score',
+    'reading_q13_average_score', 'reading_q14_average_score', 'reading_q15_average_score',
+    # Math average scores
+    'math_q1_average_score', 'math_q2_average_score', 'math_q3_average_score',
+    'math_q4_average_score', 'math_q5_average_score', 'math_q6_average_score',
+    'math_q7_average_score', 'math_q8_average_score', 'math_q9_average_score',
+    'math_q10_average_score', 'math_q11_average_score', 'math_q12_average_score',
+    'math_q13_average_score', 'math_q14_average_score', 'math_q15_average_score',
+    'math_q16_average_score', 'math_q17_average_score', 'math_q18_average_score',
+    'math_q19_average_score', 'math_q20_average_score', 'math_q21_average_score',
+    # Science average scores
+    'science_q1_average_score', 'science_q2_average_score', 'science_q3_average_score',
+    'science_q4_average_score', 'science_q5_average_score', 'science_q6_average_score',
+    'science_q7_average_score', 'science_q8_average_score', 'science_q9_average_score',
+    'science_q10_average_score', 'science_q11_average_score', 'science_q12_average_score',
+    'science_q13_average_score', 'science_q14_average_score', 'science_q15_average_score',
+    'science_q16_average_score', 'science_q17_average_score', 'science_q18_average_score',
+    'science_q19_average_score',
+    # Reading total timing
+    'reading_q1_total_timing', 'reading_q2_total_timing', 'reading_q3_total_timing',
+    'reading_q4_total_timing', 'reading_q5_total_timing', 'reading_q6_total_timing',
+    'reading_q7_total_timing', 'reading_q8_total_timing', 'reading_q9_total_timing',
+    'reading_q10_total_timing', 'reading_q11_total_timing', 'reading_q12_total_timing',
+    'reading_q13_total_timing', 'reading_q14_total_timing', 'reading_q15_total_timing',
+    # Math total timing
+    'math_q1_total_timing', 'math_q2_total_timing', 'math_q3_total_timing',
+    'math_q4_total_timing', 'math_q5_total_timing', 'math_q6_total_timing',
+    'math_q7_total_timing', 'math_q8_total_timing', 'math_q9_total_timing',
+    'math_q10_total_timing', 'math_q11_total_timing', 'math_q12_total_timing',
+    'math_q13_total_timing', 'math_q14_total_timing', 'math_q15_total_timing',
+    'math_q16_total_timing', 'math_q17_total_timing', 'math_q18_total_timing',
+    'math_q19_total_timing', 'math_q20_total_timing', 'math_q21_total_timing',
+    # Science total timing
+    'science_q1_total_timing', 'science_q2_total_timing', 'science_q3_total_timing',
+    'science_q4_total_timing', 'science_q5_total_timing', 'science_q6_total_timing',
+    'science_q7_total_timing', 'science_q8_total_timing', 'science_q9_total_timing',
+    'science_q10_total_timing', 'science_q11_total_timing', 'science_q12_total_timing',
+    'science_q13_total_timing', 'science_q14_total_timing', 'science_q15_total_timing',
+    'science_q16_total_timing', 'science_q17_total_timing', 'science_q18_total_timing',
+    'science_q19_total_timing'
+]
+
 # Configuration du Fine-tuning
 CONFIG = {
     "project_name": "ml_project_embedding",
@@ -39,39 +86,53 @@ CONFIG = {
 
 def load_data_and_targets():
     """
-    Charge X et y depuis ../datas/
-    Retourne :
-        - X : Array NumPy (N, 110) float32
-        - Y : Array NumPy (N,) float32
+    Charge X et Y, filtre les colonnes, et applique la condition < 100 NaNs.
     """
-    # Chemins
     x_path = os.path.join("..", "datas", "X_train.csv")
     y_path = os.path.join("..", "datas", "y_train.csv")
     
     if not os.path.exists(x_path) or not os.path.exists(y_path):
-        raise FileNotFoundError(f"Fichiers introuvables dans ../datas/")
+        raise FileNotFoundError("Fichiers introuvables dans ../datas/")
 
     print("[Data] Chargement des CSV...")
     
     # 1. Chargement X
     df_x = pd.read_csv(x_path)
+    
+    # Filtre Colonnes
+    missing_cols = [c for c in COLUMNS_TO_LOAD if c not in df_x.columns]
+    if missing_cols:
+        raise ValueError(f"Colonnes manquantes dans X : {missing_cols}")
+        
+    df_x = df_x[COLUMNS_TO_LOAD]
     X = df_x.to_numpy(dtype=np.float32)
     
     # 2. Chargement Y
     df_y = pd.read_csv(y_path)
     Y = df_y.to_numpy(dtype=np.float32)
+    if Y.ndim > 1: Y = Y.squeeze()
     
-    # 3. Nettoyage de la shape de Y
-    # Souvent read_csv renvoie (N, 1), mais PyTorch préfère (N,) pour les vecteurs cibles simples
-    if Y.ndim > 1:
-        Y = Y.squeeze() 
-        
-    # 4. Vérifications
-    assert len(X) == len(Y), f"Erreur: X a {len(X)} lignes, mais Y en a {len(Y)}"
-    assert X.shape[1] == 110, f"Erreur: X a {X.shape[1]} colonnes (attendu 110)"
+    # Check alignement initial
+    assert len(X) == len(Y), "X et Y n'ont pas la même longueur !"
     
-    print(f"[Data] X: {X.shape}, Y: {Y.shape}")
-    return X, Y
+    # 3. Filtre Lignes (Condition < 100 NaNs)
+    initial_len = len(X)
+    
+    # Compte des NaNs par ligne sur X
+    n_missing = np.isnan(X).sum(axis=1)
+    
+    # Masque booléen
+    mask_keep = n_missing < 100
+    
+    # Application du masque sur X ET Y
+    X_clean = X[mask_keep]
+    Y_clean = Y[mask_keep]
+    
+    print(f"[Data] Colonnes sélectionnées : {X_clean.shape[1]}")
+    print(f"[Data Cleaning] Lignes supprimées (>= 100 NaN) : {initial_len - len(X_clean)}")
+    print(f"[Data] X: {X_clean.shape}, Y: {Y_clean.shape}")
+    
+    return X_clean, Y_clean
 
 def train_one_epoch(model, loader, criterion, optimizer, device):
     model.train()

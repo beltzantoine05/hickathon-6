@@ -15,7 +15,7 @@ import pandas as pd
 from infrastructure import ArtifactManager
 from models import DAE
 
-columns_to_load = [
+COLUMNS_TO_LOAD = [
     # Reading average scores
     'reading_q1_average_score', 'reading_q2_average_score', 'reading_q3_average_score',
     'reading_q4_average_score', 'reading_q5_average_score', 'reading_q6_average_score',
@@ -78,10 +78,10 @@ CONFIG = {
 
 def load_data_with_nans():
     """
-    Charge les features depuis ../datas/X_train.csv
-    Retourne : Array NumPy (N_samples, 110) en float32
+    1. Charge X_train.csv
+    2. Garde uniquement COLUMNS_TO_LOAD
+    3. Supprime les lignes ayant >= 100 valeurs manquantes (sur les 110 colonnes)
     """
-    # Chemin relatif vers le fichier
     file_path = os.path.join("..", "datas", "X_train.csv")
     
     if not os.path.exists(file_path):
@@ -89,22 +89,36 @@ def load_data_with_nans():
 
     print(f"[Data] Chargement de {file_path}...")
     
-    # Lecture via Pandas
-    df = pd.read_csv(file_path, usecols=columns_to_load)
+    # Lecture
+    df = pd.read_csv(file_path)
     
-    # --- Check Sécurité Dimensions ---
-    # Si ton CSV a une colonne index (ex: "Unnamed: 0"), il faut l'enlever.
-    # On suppose ici que toutes les colonnes sont des features.
-    if df.shape[1] != 110:
-        print(f"[Warn] Attention : {df.shape[1]} colonnes détectées (attendu: 110).")
-        # Si tu as une colonne index en trop, souvent c'est la première, tu peux décommenter ça :
-        # df = df.iloc[:, -110:] # On garde les 110 dernières
+    # --- A. FILTRE COLONNES ---
+    # On s'assure qu'on ne travaille que sur les features désirées
+    missing_cols = [c for c in COLUMNS_TO_LOAD if c not in df.columns]
+    if missing_cols:
+        raise ValueError(f"Colonnes manquantes : {missing_cols}")
     
-    # Conversion directe en NumPy float32 (Optimisé pour PyTorch)
+    df = df[COLUMNS_TO_LOAD]
+    
+    # Conversion NumPy (N, 110)
     X = df.to_numpy(dtype=np.float32)
+    initial_len = len(X)
     
-    print(f"[Data] Loaded X shape: {X.shape} | Type: {X.dtype}")
-    return X
+    # --- B. FILTRE LIGNES (Condition < 100 NaNs) ---
+    # On compte le nombre de NaN par ligne (axis=1)
+    n_missing = np.isnan(X).sum(axis=1)
+    
+    # Condition : Avoir strictement moins de 100 valeurs manquantes
+    mask_keep = n_missing < 100
+    
+    X_clean = X[mask_keep]
+    
+    removed_count = initial_len - len(X_clean)
+    print(f"[Data] Colonnes gardées : {X_clean.shape[1]}")
+    print(f"[Data Cleaning] Lignes supprimées (>= 100 NaN) : {removed_count}")
+    print(f"[Data] Final Shape : {X_clean.shape}")
+    
+    return X_clean
 
 def masked_mse_loss(input_recons, target, mask):
     """
