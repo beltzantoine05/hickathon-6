@@ -38,7 +38,7 @@ WINSOR_COLUMNS = [
     'PA158', 'WB155', 'WB162', 'ST127', 'EC162', 'PA003', 'ST297', 'ST006', 'PA162', 'ST008',
     'EC031', 'WB177', 'EC012', 'ST223', 'PA041', 'EC163', 'PA008', 'PA177', 'ST273', 'PA154',
     'PA156', 'PA007', 'PA159', 'ST036', 'PA018', 'PA175', 'WB176', 'WB178', 'ST260', 'PA160',
-    'PA033', 'ST146', 'PA002', 'PA032', 'ST011',
+    'PA033', 'ST146', 'PA002', 'PA032',
 ]
 
 
@@ -55,7 +55,7 @@ def build_config() -> PipelineConfig:
     architecture = ArchitectureConfig(encoder_layers=[512, 288, 64], decoder_layers=[288, 512])
     dae_cfg = DAETrainingConfig()
     reg_cfg = RegressionTrainingConfig()
-    wandb_cfg = WandbConfig(project="hi6", group_prefix="que", run_prefix="dae", entity="remy-siahaan")
+    wandb_cfg = WandbConfig(project="hi6", group_prefix="que", run_prefix="que", entity="themlaw-personal)
     return PipelineConfig(
         data_dir="../../data",
         seed=42,

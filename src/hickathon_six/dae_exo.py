@@ -57,7 +57,7 @@ def build_config() -> PipelineConfig:
     architecture = ArchitectureConfig(encoder_layers=[256, 128, 64], decoder_layers=[128, 256])
     dae_cfg = DAETrainingConfig()
     reg_cfg = RegressionTrainingConfig()
-    wandb_cfg = WandbConfig(project="hi6", group_prefix="exo", run_prefix="dae", entity="themlaw-personal")
+    wandb_cfg = WandbConfig(project="hi6", group_prefix="exo", run_prefix="exo", entity="themlaw-personal")
     return PipelineConfig(
         data_dir="../../data",
         seed=42,

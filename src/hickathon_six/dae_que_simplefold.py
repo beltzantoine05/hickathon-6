@@ -2,7 +2,7 @@
 
 import argparse
 
-from hickathon_six import que_exo
+from hickathon_six import dae_que
 from hickathon_six.DAE import PipelineRunner
 
 
