@@ -3,15 +3,18 @@ from __future__ import annotations
 import glob
 import os
 from typing import Optional, Tuple
+from dataclasses import replace
 
 import torch
 import pandas as pd
+import numpy as np
+from sklearn.model_selection import KFold
 
 from hickathon_six.DAE.config import Config
 from hickathon_six.DAE.models import DAE
 from hickathon_six.DAE.preprocess import Preprocessor
 from hickathon_six.DAE.training import train_dae, train_dae_full, export_encoder_embeddings
-from hickathon_six.DAE.finetune import train_regressor_full
+from hickathon_six.DAE.finetune import train_regressor, train_regressor_full
 from hickathon_six.DAE.logging_utils import wandb_run
 
 
@@ -91,3 +94,41 @@ def full_train_only_flow(
     post_csv = os.path.join(cfg.output_dir, "dae_embeddings_post.csv")
     export_encoder_embeddings(cfg, dae, prep, X_test_df, post_csv)
     return pre_csv, post_csv
+
+
+def kfold_flow(
+    cfg: Config,
+    X_train_df: pd.DataFrame,
+    y_train: Optional[pd.Series],
+) -> None:
+    """Run K-Fold training for DAE and finetuning (if y provided) before full training.
+
+    Mirrors the original implementation idea: for each fold, fit preprocessing on the
+    training fold, train DAE with ES on that fold split, and if targets are available,
+    run the two-phase finetune with ES on the same split. No artifacts are saved; this
+    is for monitoring/validation and W&B logging only.
+    """
+    n_splits = max(2, int(cfg.n_splits))
+    kf = KFold(n_splits=n_splits, shuffle=True, random_state=cfg.random_state)
+    indices = np.arange(len(X_train_df))
+
+    for fold, (tr_idx, va_idx) in enumerate(kf.split(indices)):
+        X_tr = X_train_df.iloc[tr_idx]
+        X_val = X_train_df.iloc[va_idx]
+        if y_train is not None:
+            y_tr = y_train.iloc[tr_idx]
+            y_val = y_train.iloc[va_idx]
+        else:
+            y_tr = None
+            y_val = None
+
+        # Adjust group to include fold tag
+        cfg_fold = replace(cfg, group_prefix=f"{cfg.group_prefix}-fold{fold}")
+
+        # Train DAE with ES on this fold
+        dae, prep, std_vec_t = train_dae(cfg_fold, X_tr, X_val)
+
+        # Optional: Finetune on this fold if y provided
+        if y_tr is not None and y_val is not None:
+            _ = train_regressor(cfg_fold, dae, prep, X_tr, y_tr, X_val, y_val)
+        # No full-train inside the fold loop

@@ -16,6 +16,32 @@ from hickathon_six.DAE.training import _device
 from hickathon_six.DAE.logging_utils import wandb_run, run_name, log_metrics
 
 
+def _r2_score_np(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+    y_true = y_true.astype(np.float64)
+    y_pred = y_pred.astype(np.float64)
+    ss_res = float(((y_true - y_pred) ** 2).sum())
+    ss_tot = float(((y_true - y_true.mean()) ** 2).sum())
+    return 0.0 if ss_tot <= 1e-12 else float(1.0 - ss_res / ss_tot)
+
+
+def _eval_reg_metrics_from_loader(loader: DataLoader, model: nn.Module, device: torch.device) -> tuple[float, float]:
+    model.eval()
+    preds: list[np.ndarray] = []
+    ys: list[np.ndarray] = []
+    with torch.no_grad():
+        for bx, by in loader:
+            bx = bx.to(device)
+            by = by.to(device)
+            pr = model(bx)
+            preds.append(pr.detach().cpu().numpy())
+            ys.append(by.detach().cpu().numpy())
+    y_pred = np.concatenate(preds, axis=0).reshape(-1)
+    y_true = np.concatenate(ys, axis=0).reshape(-1)
+    mse = float(np.mean((y_true - y_pred) ** 2))
+    r2 = _r2_score_np(y_true, y_pred)
+    return mse, r2
+
+
 def _build_reg_loader(X_scaled: np.ndarray, y: np.ndarray, batch_size: int, shuffle: bool) -> DataLoader:
     x_t = torch.from_numpy(X_scaled.astype(np.float32))
     y_t = torch.from_numpy(y.astype(np.float32)).view(-1, 1)
@@ -72,6 +98,8 @@ def train_regressor(
     def run_phase1() -> nn.Module:
         opt = optim.Adam(head.parameters(), lr=cfg.ft_lr_head_phase1 if cfg.ft_two_phase else cfg.ft_lr, weight_decay=cfg.ft_weight_decay)
         train_loader = _build_reg_loader(Htr, y_train.to_numpy(), cfg.ft_batch_size, shuffle=True)
+        # eval loaders (no shuffle) for consistent metrics
+        train_eval_loader = _build_reg_loader(Htr, y_train.to_numpy(), max(4096, cfg.ft_batch_size), shuffle=False)
         val_loader = _build_reg_loader(Hval, y_val.to_numpy(), cfg.ft_batch_size, shuffle=False) if Hval is not None else None
 
         best_val = float("inf")
@@ -99,7 +127,10 @@ def train_regressor(
                     total += loss.item() * bs
                     count += bs
                 train_loss = total / max(1, count)
-                metrics = {"epoch": epoch, ("finetune/phase1/train_mse" if cfg.ft_two_phase else "finetune/train_mse"): train_loss}
+                # compute train metrics (MSE + R2)
+                tr_mse, tr_r2 = _eval_reg_metrics_from_loader(train_eval_loader, head, device)
+                base = "finetune/phase1" if cfg.ft_two_phase else "finetune"
+                metrics = {"epoch": epoch, f"{base}/train_mse": tr_mse, f"{base}/train_r2": tr_r2}
 
                 if val_loader is not None:
                     head.eval()
@@ -114,16 +145,17 @@ def train_regressor(
                             bs = bx.size(0)
                             vtotal += loss.item() * bs
                             vcount += bs
-                    val_loss = vtotal / max(1, vcount)
-                    key = "finetune/phase1/val_mse" if cfg.ft_two_phase else "finetune/val_mse"
-                    metrics[key] = val_loss
+                    # also compute R2 consistently using full-batch eval
+                    val_mse, val_r2 = _eval_reg_metrics_from_loader(val_loader, head, device)
+                    metrics[f"{base}/val_mse"] = val_mse
+                    metrics[f"{base}/val_r2"] = val_r2
 
                     # Console log every epoch
-                    print(f"[FT][P1][ES] Epoch {epoch+1:03d} | train {train_loss:.6f} | val {val_loss:.6f}")
+                    print(f"[FT][P1][ES] Epoch {epoch+1:03d} | train_mse {tr_mse:.6f} | train_r2 {tr_r2:.4f} | val_mse {val_mse:.6f} | val_r2 {val_r2:.4f}")
 
-                    improved = (best_val - val_loss) > cfg.ft_min_delta
+                    improved = (best_val - val_mse) > cfg.ft_min_delta
                     if improved:
-                        best_val = val_loss
+                        best_val = val_mse
                         patience_counter = 0
                         best_state = head.state_dict()
                     else:
@@ -135,7 +167,7 @@ def train_regressor(
 
                 log_metrics(run, metrics, step=epoch)
                 if val_loader is None:
-                    print(f"[FT][P1][ES] Epoch {epoch+1:03d} | train {train_loss:.6f}")
+                    print(f"[FT][P1][ES] Epoch {epoch+1:03d} | train_mse {tr_mse:.6f} | train_r2 {tr_r2:.4f}")
 
         if best_state is not None:
             head.load_state_dict(best_state)
@@ -209,8 +241,20 @@ def train_regressor(
                 bs = bx.size(0)
                 total += loss.item() * bs
                 count += bs
-            train_loss = total / max(1, count)
-            metrics = {"epoch": epoch, "finetune/phase2/train_mse": train_loss}
+            # Compute train metrics (MSE + R2) on full train using eval pass
+            # Reuse train_loader2 with no shuffle for eval
+            train_eval_loader2 = _build_masked_loader(Xtr_scaled, Mtr, y_train.to_numpy(), max(4096, cfg.ft_batch_size), shuffle=False)
+            # temporary model that maps masked input -> prediction for metric computation
+            class _Wrapped(nn.Module):
+                def __init__(self, enc: nn.Module, hd: nn.Module):
+                    super().__init__()
+                    self.enc = enc
+                    self.hd = hd
+                def forward(self, x):
+                    return self.hd(self.enc(x))
+            wrapped = _Wrapped(encoder, head).to(device)
+            tr_mse2, tr_r22 = _eval_reg_metrics_from_loader(train_eval_loader2, wrapped, device)
+            metrics = {"epoch": epoch, "finetune/phase2/train_mse": tr_mse2, "finetune/phase2/train_r2": tr_r22}
 
             if val_loader2 is not None:
                 dae.eval()
@@ -227,15 +271,17 @@ def train_regressor(
                         bs = bx.size(0)
                         vtotal += loss.item() * bs
                         vcount += bs
-                val_loss = vtotal / max(1, vcount)
-                metrics["finetune/phase2/val_mse"] = val_loss
+                # Compute full-batch eval metrics
+                val_mse2, val_r22 = _eval_reg_metrics_from_loader(val_loader2, wrapped, device)
+                metrics["finetune/phase2/val_mse"] = val_mse2
+                metrics["finetune/phase2/val_r2"] = val_r22
 
                 # Console log every epoch
-                print(f"[FT][P2][ES] Epoch {epoch+1:03d} | train {train_loss:.6f} | val {val_loss:.6f}")
+                print(f"[FT][P2][ES] Epoch {epoch+1:03d} | train_mse {tr_mse2:.6f} | train_r2 {tr_r22:.4f} | val_mse {val_mse2:.6f} | val_r2 {val_r22:.4f}")
 
-                improved = (best_val2 - val_loss) > cfg.ft_min_delta
+                improved = (best_val2 - val_mse2) > cfg.ft_min_delta
                 if improved:
-                    best_val2 = val_loss
+                    best_val2 = val_mse2
                     patience_counter2 = 0
                     # save both encoder and head
                     best_state2 = {
@@ -251,7 +297,7 @@ def train_regressor(
 
             log_metrics(run, metrics, step=epoch)
             if val_loader2 is None:
-                print(f"[FT][P2][ES] Epoch {epoch+1:03d} | train {train_loss:.6f}")
+                print(f"[FT][P2][ES] Epoch {epoch+1:03d} | train_mse {tr_mse2:.6f} | train_r2 {tr_r22:.4f}")
 
     if best_state2 is not None:
         encoder.load_state_dict(best_state2["encoder"])  # type: ignore[arg-type]
@@ -306,10 +352,10 @@ def train_regressor_full(
                 bs = bx.size(0)
                 total += loss.item() * bs
                 count += bs
-            train_loss = total / max(1, count)
-            key = "finetune/phase1/train_mse" if cfg.ft_two_phase else "finetune/train_mse"
-            log_metrics(run, {"epoch": epoch, key: train_loss}, step=epoch)
-            print(f"[FT][P1][FULL] Epoch {epoch+1:03d} | train {train_loss:.6f}")
+            tr_mse, tr_r2 = _eval_reg_metrics_from_loader(loader1, head, device)
+            base = "finetune/phase1" if cfg.ft_two_phase else "finetune"
+            log_metrics(run, {"epoch": epoch, f"{base}/train_mse": tr_mse, f"{base}/train_r2": tr_r2}, step=epoch)
+            print(f"[FT][P1][FULL] Epoch {epoch+1:03d} | train_mse {tr_mse:.6f} | train_r2 {tr_r2:.4f}")
 
     if not cfg.ft_two_phase:
         return head
@@ -358,8 +404,17 @@ def train_regressor_full(
                 bs = bx.size(0)
                 total += loss.item() * bs
                 count += bs
-            train_loss = total / max(1, count)
-            log_metrics(run, {"epoch": epoch, "finetune/phase2/train_mse": train_loss}, step=epoch)
-            print(f"[FT][P2][FULL] Epoch {epoch+1:03d} | train {train_loss:.6f}")
+            # Build wrapped model for metrics
+            class _Wrapped(nn.Module):
+                def __init__(self, enc: nn.Module, hd: nn.Module):
+                    super().__init__()
+                    self.enc = enc
+                    self.hd = hd
+                def forward(self, x):
+                    return self.hd(self.enc(x))
+            wrapped = _Wrapped(encoder, head).to(device)
+            tr_mse2, tr_r22 = _eval_reg_metrics_from_loader(loader2, wrapped, device)
+            log_metrics(run, {"epoch": epoch, "finetune/phase2/train_mse": tr_mse2, "finetune/phase2/train_r2": tr_r22}, step=epoch)
+            print(f"[FT][P2][FULL] Epoch {epoch+1:03d} | train_mse {tr_mse2:.6f} | train_r2 {tr_r22:.4f}")
 
     return head

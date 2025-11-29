@@ -31,6 +31,7 @@ class Config:
     val_size: float = 0.2
     shuffle: bool = True
     random_state: int = 42
+    n_splits: int = 5  # for k-fold CV before full training
 
     # Model architecture
     latent_dim: int = 64

@@ -10,7 +10,7 @@ from hickathon_six.DAE.config import Config
 from hickathon_six.DAE.data import load_data, train_val_split
 from hickathon_six.DAE.training import train_dae, train_dae_full, export_encoder_embeddings
 from hickathon_six.DAE.finetune import train_regressor, train_regressor_full
-from hickathon_six.DAE.pipeline import embeddings_only_export, full_train_only_flow
+from hickathon_six.DAE.pipeline import embeddings_only_export, full_train_only_flow, kfold_flow
 
 
 def _columns_from_todo() -> List[str]:
@@ -97,7 +97,10 @@ def run() -> None:
         _ = full_train_only_flow(cfg, X_train_df, y_train, X_test_df)
         return
 
-    # Default flow: split with ES, then full-train counterparts
+    # K-Fold CV (like original): run folds for monitoring before full training
+    kfold_flow(cfg, X_train_df, y_train)
+
+    # Default flow after folds: single split with ES, then full-train counterparts
     X_tr, y_tr, X_val, y_val = train_val_split(X_train_df, y_train, cfg)
     dae, prep, std_vec_t = train_dae(cfg, X_tr, X_val)
     dae_full = train_dae_full(cfg, dae, prep, std_vec_t, X_train_df)

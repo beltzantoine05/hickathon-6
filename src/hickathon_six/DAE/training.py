@@ -137,6 +137,7 @@ def train_dae(
             metrics = {"epoch": epoch, "dae/train_noisy": train_loss_noisy, "dae/std_clip_cap": float(std_clip_cap), "dae/std_nonzero": float(std_nonzero)}
 
             if val_loader is not None:
+                # Per user clarification: switch model to eval() during validation.
                 model.eval()
                 vtotal_noisy = 0.0
                 vtotal_clean = 0.0
