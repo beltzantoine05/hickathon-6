@@ -65,11 +65,19 @@ class ArtifactManager:
     def download_artifact(self, artifact_name, local_path, run):
         """
         Télécharge le fichier directement depuis W&B.
+        Si artifact_name contient déjà une version (ex: :v0, :latest), l'utilise directement.
+        Sinon, ajoute :latest par défaut.
         """
-        print(f"[W&B] Téléchargement de {artifact_name}:latest ...")
+        # Vérifier si une version est déjà spécifiée
+        if ":" in artifact_name:
+            full_artifact_name = artifact_name
+        else:
+            full_artifact_name = artifact_name + ":latest"
+            
+        print(f"[W&B] Téléchargement de {full_artifact_name} ...")
 
         # 1. On récupère l'artefact
-        artifact = run.use_artifact(artifact_name + ":latest")
+        artifact = run.use_artifact(full_artifact_name)
 
         # 2. On laisse W&B télécharger le fichier dans un dossier cache
         # root=os.path.dirname(local_path) force le download dans le dossier voulu

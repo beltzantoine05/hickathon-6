@@ -255,10 +255,10 @@ def main():
         )
 
         # -----------------------------------------------------------
-        # 1. TÉLÉCHARGEMENT DE L'ENCODEUR PRÉ-ENTRAÎNÉ
+        # 1. TÉLÉCHARGEMENT DE L'ENCODEUR PRÉ-ENTRAÎNÉ (v0 = espace latent 64)
         # -----------------------------------------------------------
         encoder_path = f"dl_encoder_fold_{fold}.pth"
-        mgr.download_artifact(f"dae-encoder-fold_{fold}", encoder_path, run)
+        mgr.download_artifact(f"dae-encoder-fold_{fold}:64", encoder_path, run)
 
         # -----------------------------------------------------------
         # 2. PREPROCESSING (identique à train_dae.py)

@@ -2,7 +2,6 @@
 __pycache__/
 .venv
 .env
-X_train.csv
-y_train.csv
+datas/
 temp*
 wandb/
