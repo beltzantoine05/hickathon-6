@@ -98,6 +98,7 @@ class PipelineConfig:
     encoder_artifact_name: str = "dae-encoder-full"
     finetuned_encoder_artifact_name: str = "finetuned-encoder-full"
     fold_encoder_artifact_prefix: str = "dae-encoder-fold"
+    finetuned_encoder_artifact_prefix: str = "finetuned-encoder-fold"
     load_fold_encoders_from_artifacts: bool = False
     use_pretrained_full_encoder: bool = False
     use_gpu_if_available: bool = True

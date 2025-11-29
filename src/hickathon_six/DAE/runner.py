@@ -35,6 +35,9 @@ class PipelineRunner:
         self.device = torch.device(config.resolve_device())
         seed_everything(config.seed)
 
+        self._artifact_root = os.path.join(self.config.data_dir, "artifacts")
+        os.makedirs(self._artifact_root, exist_ok=True)
+
     def load_features(self, filename: str) -> pd.DataFrame:
         print(f"Loading {filename}...")
         path = os.path.join(self.config.data_dir, filename)
@@ -89,6 +92,19 @@ class PipelineRunner:
         y_filtered = y.loc[keep_mask] if y is not None else None
         return X_filtered, y_filtered
 
+    def _save_state_locally(self, state: dict, filename: str) -> str:
+        path = os.path.join(self._artifact_root, filename)
+        torch.save(state, path)
+        print(f"[Artifacts] Saved {filename} -> {path}")
+        return path
+
+    def _log_artifact(self, run, path: str, artifact_name: str) -> None:
+        if not self.config.wandb.upload_artifacts:
+            return
+        artifact = wandb.Artifact(artifact_name, type="model")
+        artifact.add_file(path, name=os.path.basename(path))
+        run.log_artifact(artifact, aliases=["latest"])
+
     def train_dae_kfold(self, X_df: pd.DataFrame) -> Dict[int, FlexibleEncoder]:
         cfg = self.config
         encoders: Dict[int, FlexibleEncoder] = {}
@@ -117,6 +133,9 @@ class PipelineRunner:
             encoder = self._build_encoder(cfg)
             encoder.load_state_dict(encoder_state)
             encoders[fold] = encoder
+            filename = f"{cfg.fold_encoder_artifact_prefix}-{fold}.pth"
+            local_path = self._save_state_locally(encoder_state, filename)
+            self._log_artifact(run, local_path, f"{cfg.fold_encoder_artifact_prefix}-{fold}")
             run.finish()
         return encoders
 
@@ -249,13 +268,8 @@ class PipelineRunner:
         X_scaled, mask = preprocessor.fit_transform(X_df)
         dae_cfg = replace(cfg.dae, epochs=cfg.dae.final_epochs)
         encoder_state = self._train_single_dae(run, X_scaled, mask, X_scaled, mask, replace(cfg, dae=dae_cfg))
-        if cfg.wandb.upload_artifacts:
-            encoder_path = "dae_encoder_full.pth"
-            torch.save(encoder_state, encoder_path)
-            artifact = wandb.Artifact(cfg.encoder_artifact_name, type="model")
-            artifact.add_file(encoder_path)
-            run.log_artifact(artifact, aliases=["latest"])
-            os.remove(encoder_path)
+        encoder_path = self._save_state_locally(encoder_state, "dae_encoder_full.pth")
+        self._log_artifact(run, encoder_path, cfg.encoder_artifact_name)
         run.finish()
         return encoder_state, preprocessor
 
@@ -295,6 +309,10 @@ class PipelineRunner:
                 mask_val,
                 y.iloc[val_idx].to_numpy(),
             )
+            finetuned_path = self._save_state_locally(
+                model.encoder.state_dict(), f"{cfg.finetuned_encoder_artifact_prefix}-{fold}.pth"
+            )
+            self._log_artifact(run, finetuned_path, f"{cfg.finetuned_encoder_artifact_prefix}-{fold}")
             run.finish()
 
     def _train_regressor(
@@ -442,13 +460,8 @@ class PipelineRunner:
         )
         for _ in range(cfg.regression.final_epochs):
             self._train_reg_epoch(model, full_loader, criterion, opt_final, cfg.regression.grad_clip_norm)
-        if cfg.wandb.upload_artifacts:
-            finetuned_path = "finetuned_encoder_full.pth"
-            torch.save(model.encoder.state_dict(), finetuned_path)
-            artifact = wandb.Artifact(cfg.finetuned_encoder_artifact_name, type="model")
-            artifact.add_file(finetuned_path)
-            run.log_artifact(artifact, aliases=["latest"])
-            os.remove(finetuned_path)
+        finetuned_path = self._save_state_locally(model.encoder.state_dict(), "finetuned_encoder_full.pth")
+        self._log_artifact(run, finetuned_path, cfg.finetuned_encoder_artifact_name)
         run.finish()
         return model.encoder.state_dict(), preprocessor
 
@@ -502,6 +515,7 @@ class PipelineRunner:
                     cfg.data_dir, f"{cfg.embedding_prefix}_{suffix}_{split}.csv"
                 )
                 pd.DataFrame(embeds[split], index=indices).to_csv(path)
+                print(f"[Embeddings] Saved {split} embeddings -> {path}")
 
         save(base_embeddings, "dae_full")
         save(finetuned_embeddings, "finetuned_full")

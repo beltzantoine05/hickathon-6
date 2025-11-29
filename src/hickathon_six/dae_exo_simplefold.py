@@ -1,4 +1,4 @@
-"""Run supervised finetuning using pretrained DAE fold encoders."""
+"""Train a single DAE fold (default: fold 0) and save the encoder locally."""
 
 import argparse
 
@@ -12,19 +12,14 @@ def parse_args():
         "--fold",
         type=int,
         default=0,
-        help="Fold index to finetune. Use --fold -1 to process all folds.",
+        help="Fold index to pretrain (default: 0).",
     )
     return parser.parse_args()
 
 
-def build_config(fold: int | None = None):
+def build_config(fold: int):
     cfg = dae_exo.build_config()
-    cfg.load_fold_encoders_from_artifacts = True
-    cfg.use_pretrained_full_encoder = True
-    if fold is not None and fold >= 0:
-        cfg.fold_indices = [fold]
-    elif fold is not None and fold < 0:
-        cfg.fold_indices = None
+    cfg.fold_indices = [fold]
     return cfg
 
 
@@ -32,7 +27,9 @@ def main():
     args = parse_args()
     cfg = build_config(args.fold)
     runner = PipelineRunner(cfg)
-    runner.run()
+    X_train_df = runner.load_features("X_train.csv")
+    X_train_df, _ = runner._filter_rows_with_missing(X_train_df)
+    runner.train_dae_kfold(X_train_df)
 
 
 if __name__ == "__main__":
