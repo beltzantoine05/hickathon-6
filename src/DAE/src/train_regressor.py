@@ -323,7 +323,7 @@ def main():
             train_loss = train_one_epoch(model, train_loader, criterion, optimizer_p1, device)
             val_loss = validate(model, val_loader, criterion, device)
             run.log({"phase": 1, "epoch": epoch, "train_loss": train_loss, "val_loss": val_loss})
-            print(f"P1 Epoch {epoch + 1} | Val: {val_loss:.4f}")
+            print(f"P1 Epoch {epoch + 1} | Loss: {train_loss:.4f} | Val: {val_loss:.4f} ")
 
         # -----------------------------------------------------------
         # 5. PHASE 2 : FINE-TUNING (Unfreeze progressif)
@@ -355,7 +355,7 @@ def main():
             val_loss = validate(model, val_loader, criterion, device)
 
             run.log({"phase": 2, "epoch": epoch, "train_loss": train_loss, "val_loss": val_loss})
-            print(f"P2 Epoch {epoch + 1} | Val: {val_loss:.4f}")
+            print(f"P2 Epoch {epoch + 1} | Loss: {train_loss:.4f} | Val: {val_loss:.4f}")
 
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
