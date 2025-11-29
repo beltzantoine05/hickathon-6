@@ -1,6 +1,7 @@
 """Pipeline orchestration for DAE pretraining and finetuning."""
 from __future__ import annotations
 
+import copy
 import os
 from dataclasses import replace
 from typing import List, Tuple
@@ -54,11 +55,19 @@ class PipelineRunner:
             self.generate_embeddings(X_train_df, X_test_df)
             return
 
+        encoder_states = None
         if not self.config.train_full_only and self.config.run_kfold:
-            self.train_dae_kfold(X_train_df)
-            self.train_regressor_kfold(X_train_df, y_train)
+            if self.config.load_fold_encoders_from_artifacts:
+                encoder_states = self._download_fold_encoders(self.config.dae.n_splits)
+            else:
+                encoder_states = self.train_dae_kfold(X_train_df)
+            self.train_regressor_kfold(X_train_df, y_train, encoder_states)
 
-        encoder_state, preprocessor = self.train_dae_full(X_train_df)
+        if self.config.use_pretrained_full_encoder:
+            encoder_state = self._download_encoder(self.config.encoder_artifact_name)
+            preprocessor = Preprocessor(self.config.preprocessing).fit(X_train_df)
+        else:
+            encoder_state, preprocessor = self.train_dae_full(X_train_df)
         finetuned_state, finetune_preproc = self.train_regressor_full(X_train_df, y_train, encoder_state)
         self.generate_embeddings(X_train_df, X_test_df, encoder_state, finetuned_state, preprocessor)
 
@@ -66,9 +75,10 @@ class PipelineRunner:
         self, X_df: pd.DataFrame, y: pd.Series | None = None
     ) -> Tuple[pd.DataFrame, pd.Series | None]:
         threshold = self.config.preprocessing.max_missing_per_row
-        if threshold is None:
+        columns = self.config.preprocessing.columns
+        if threshold is None or not columns:
             return X_df, y
-        missing_counts = X_df.isna().sum(axis=1)
+        missing_counts = X_df[columns].isna().sum(axis=1)
         keep_mask = missing_counts < threshold
         removed = int((~keep_mask).sum())
         if removed > 0:
@@ -161,7 +171,7 @@ class PipelineRunner:
             if improved:
                 best_val_clean = val_clean
                 patience_counter = 0
-                best_encoder = model.encoder.state_dict()
+                best_encoder = copy.deepcopy(model.encoder.state_dict())
             else:
                 if epoch + 1 >= dae_cfg.min_epochs:
                     patience_counter += 1
@@ -244,7 +254,9 @@ class PipelineRunner:
         run.finish()
         return encoder_state, preprocessor
 
-    def train_regressor_kfold(self, X_df: pd.DataFrame, y: pd.Series) -> None:
+    def train_regressor_kfold(
+        self, X_df: pd.DataFrame, y: pd.Series, encoder_states: List[dict] | None = None
+    ) -> None:
         cfg = self.config
         kfold = KFold(n_splits=cfg.dae.n_splits, shuffle=True, random_state=cfg.seed)
         for fold, (train_idx, val_idx) in enumerate(kfold.split(X_df)):
@@ -257,7 +269,10 @@ class PipelineRunner:
             preprocessor = Preprocessor(cfg.preprocessing)
             X_train_scaled, mask_train = preprocessor.fit_transform(X_df.iloc[train_idx])
             X_val_scaled, mask_val = preprocessor.transform(X_df.iloc[val_idx])
-            encoder_state, _ = self.train_dae_full(X_df.iloc[train_idx])
+            if encoder_states is None:
+                encoder_state, _ = self.train_dae_full(X_df.iloc[train_idx])
+            else:
+                encoder_state = encoder_states[fold]
             encoder = self._build_encoder(cfg).to(self.device)
             encoder.load_state_dict(encoder_state)
             model = MaskedSupervisedRegressor(encoder, latent_dim=cfg.architecture.encoder_layers[-1]).to(self.device)
@@ -467,3 +482,7 @@ class PipelineRunner:
             raise FileNotFoundError("No .pth file in downloaded artifact")
         path = os.path.join(download_dir, pth_files[0])
         return torch.load(path, map_location=self.device)
+
+    def _download_fold_encoders(self, n_splits: int) -> List[dict]:
+        prefix = self.config.fold_encoder_artifact_prefix
+        return [self._download_encoder(f"{prefix}-{fold}") for fold in range(n_splits)]

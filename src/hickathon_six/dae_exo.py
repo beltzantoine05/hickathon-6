@@ -66,7 +66,7 @@ def build_config() -> PipelineConfig:
         log_columns=TIMING_COLUMNS,
         winsor_quantile=0.999,
         enforce_non_negative=True,
-        max_missing_per_row=None,
+        max_missing_per_row=100,
     )
     architecture = ArchitectureConfig(encoder_layers=[256, 128, 64], decoder_layers=[128, 256])
     dae_cfg = DAETrainingConfig()

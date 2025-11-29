@@ -97,6 +97,9 @@ class PipelineConfig:
     regression: RegressionTrainingConfig = field(default_factory=RegressionTrainingConfig)
     encoder_artifact_name: str = "dae-encoder-full"
     finetuned_encoder_artifact_name: str = "finetuned-encoder-full"
+    fold_encoder_artifact_prefix: str = "dae-encoder-fold"
+    load_fold_encoders_from_artifacts: bool = False
+    use_pretrained_full_encoder: bool = False
     use_gpu_if_available: bool = True
 
     def resolve_device(self) -> str:
