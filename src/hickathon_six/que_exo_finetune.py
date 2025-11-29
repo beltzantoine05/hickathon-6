@@ -1,8 +1,8 @@
-"""Run supervised finetuning using pretrained DAE fold encoders."""
+"""Run supervised finetuning using pretrained QUE DAE fold encoders."""
 
 import argparse
 
-from hickathon_six import dae_exo
+from hickathon_six import que_exo
 from hickathon_six.DAE import PipelineRunner
 
 
@@ -18,7 +18,7 @@ def parse_args():
 
 
 def build_config(fold: int | None = None):
-    cfg = dae_exo.build_config()
+    cfg = que_exo.build_config()
     cfg.load_fold_encoders_from_artifacts = True
     cfg.use_pretrained_full_encoder = True
     cfg.run_full_stage = False

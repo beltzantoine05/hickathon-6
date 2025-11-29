@@ -107,6 +107,7 @@ class PipelineConfig:
     use_pretrained_full_encoder: bool = False
     use_gpu_if_available: bool = True
     fold_indices: Optional[List[int]] = None
+    run_full_stage: bool = True
 
     def resolve_device(self) -> str:
         """Return the preferred device string based on availability."""

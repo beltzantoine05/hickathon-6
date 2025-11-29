@@ -68,6 +68,9 @@ class PipelineRunner:
                 encoder_states = self.train_dae_kfold(X_train_df)
             self.train_regressor_kfold(X_train_df, y_train, encoder_states)
 
+        if not self.config.run_full_stage:
+            return
+
         if self.config.use_pretrained_full_encoder:
             encoder_state = self._download_encoder(self.config.encoder_artifact_name)
             preprocessor = Preprocessor(self.config.preprocessing).fit(X_train_df)
