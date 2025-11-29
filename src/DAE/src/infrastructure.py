@@ -21,7 +21,10 @@ class ArtifactManager:
             aws_access_key_id=os.getenv('MINIO_ACCESS_KEY'),
             aws_secret_access_key=os.getenv('MINIO_SECRET_KEY'),
             aws_session_token=os.getenv('MINIO_SESSION_TOKEN', None)
+<<<<<<< HEAD
+=======
 
+>>>>>>> d635570b24e990906c9dbd89a82e2aa27306e8fa
         )
         self._ensure_bucket_exists()
 
