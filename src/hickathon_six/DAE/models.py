@@ -11,13 +11,15 @@ def _build_mlp(
     dropout: float | None = None,
     *,
     apply_dropout_to_last: bool = True,
+    apply_activation_to_last: bool = True,
 ) -> nn.Sequential:
     layers: List[nn.Module] = []
     sizes_list = list(sizes)
     for i in range(len(sizes_list) - 1):
         layers.append(nn.Linear(sizes_list[i], sizes_list[i + 1]))
-        layers.append(type(activation)())
         is_last = i == len(sizes_list) - 2
+        if apply_activation_to_last or not is_last:
+            layers.append(type(activation)())
         if dropout is not None and dropout > 0 and (apply_dropout_to_last or not is_last):
             layers.append(nn.Dropout(dropout))
     return nn.Sequential(*layers)
@@ -65,7 +67,12 @@ class FlexibleDecoder(nn.Module):
 
     def __init__(self, latent_dim: int, hidden_sizes: List[int], output_dim: int):
         super().__init__()
-        self.net = _build_mlp([latent_dim, *hidden_sizes, output_dim], activation=nn.GELU(), dropout=None)
+        self.net = _build_mlp(
+            [latent_dim, *hidden_sizes, output_dim],
+            activation=nn.GELU(),
+            dropout=None,
+            apply_activation_to_last=False,
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.net(x)
