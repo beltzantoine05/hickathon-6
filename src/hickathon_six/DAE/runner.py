@@ -35,6 +35,7 @@ class PipelineRunner:
         seed_everything(config.seed)
 
     def load_features(self, filename: str) -> pd.DataFrame:
+        print(f"Loading {filename}...")
         path = os.path.join(self.config.data_dir, filename)
         return pd.read_csv(path, index_col=0)
 
