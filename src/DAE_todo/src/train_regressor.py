@@ -14,7 +14,6 @@ import wandb
 from infrastructure import ArtifactManager
 from models import Encoder
 
-
 COLUMNS_TO_LOAD = [
     'reading_q1_average_score', 'reading_q2_average_score', 'reading_q3_average_score',
     'reading_q4_average_score', 'reading_q5_average_score', 'reading_q6_average_score',
@@ -92,10 +91,6 @@ CONFIG = {
 
 
 class MaskedSupervisedRegressor(nn.Module):
-    """
-    IMPORTANT: reproduit exactement la convention d'entrée du DAE:
-    values = values * mask avant de passer à l'encoder.
-    """
     def __init__(self, encoder: Encoder):
         super().__init__()
         self.encoder = encoder
@@ -129,11 +124,9 @@ def apply_timing_transform(X_raw: np.ndarray, idx: list[int], caps: dict[int, fl
         col = X[:, j]
         if CONFIG["timing_nonneg"]:
             col = np.where(np.isnan(col), col, np.maximum(col, 0.0))
-
         cap = caps.get(j, np.nan)
         if not np.isnan(cap):
             col = np.where(np.isnan(col), col, np.minimum(col, cap))
-
         X[:, j] = np.log1p(col).astype(np.float32)
     return X
 
@@ -161,17 +154,6 @@ def load_data_and_targets():
     return X[keep], y[keep]
 
 
-def build_xy(X_raw: np.ndarray, imputer, scaler, caps: dict[int, float]) -> np.ndarray:
-    tidx = timing_indices()
-    X_t = apply_timing_transform(X_raw, tidx, caps)
-    mask = (~np.isnan(X_t)).astype(np.float32)
-
-    X_imp = imputer.transform(X_t)
-    X_scaled = scaler.transform(X_imp).astype(np.float32)
-
-    return np.hstack([X_scaled, mask]).astype(np.float32)
-
-
 def train_one_epoch(model, loader, criterion, optimizer, device) -> float:
     model.train()
     running = 0.0
@@ -185,21 +167,41 @@ def train_one_epoch(model, loader, criterion, optimizer, device) -> float:
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=CONFIG["grad_clip_norm"])
         optimizer.step()
+
         running += loss.item() * xb.size(0)
     return running / len(loader.dataset)
 
 
 @torch.no_grad()
-def eval_loss(model, loader, criterion, device) -> float:
+def predict_all(model, loader, device):
     model.eval()
-    running = 0.0
+    preds = []
+    ys = []
     for xb, yb in loader:
         xb = xb.to(device)
-        yb = yb.to(device)
-        pred = model(xb)
-        loss = criterion(pred, yb)
-        running += loss.item() * xb.size(0)
-    return running / len(loader.dataset)
+        pred = model(xb).detach().cpu().numpy()
+        preds.append(pred)
+        ys.append(yb.numpy())
+    return np.concatenate(preds, axis=0), np.concatenate(ys, axis=0)
+
+
+def r2_score_np(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+    y_true = y_true.astype(np.float64)
+    y_pred = y_pred.astype(np.float64)
+    ss_res = np.sum((y_true - y_pred) ** 2)
+    ss_tot = np.sum((y_true - np.mean(y_true)) ** 2)
+    if ss_tot <= 1e-12:
+        return 0.0
+    return float(1.0 - ss_res / ss_tot)
+
+
+@torch.no_grad()
+def eval_metrics(model, loader, criterion, device) -> dict:
+    preds, ys = predict_all(model, loader, device)
+    mse = float(np.mean((ys - preds) ** 2))
+    r2 = r2_score_np(ys, preds)
+    # mse_torch juste pour cohérence si tu veux
+    return {"mse": mse, "r2": r2}
 
 
 def main():
@@ -226,7 +228,7 @@ def main():
         y_train = y_all[train_idx]
         y_val = y_all[val_idx]
 
-        # Preprocess fit sur train seulement
+        # Preprocess fit sur train
         tidx = timing_indices()
         caps = fit_timing_caps(X_train_raw, tidx, q=float(CONFIG["timing_winsor_q"]))
         X_train_t = apply_timing_transform(X_train_raw, tidx, caps)
@@ -257,9 +259,9 @@ def main():
             shuffle=False,
         )
 
-        # Download encoder pré-entraîné
+        # Encoder pré-entrainé
         encoder_path = f"dl_encoder_fold_{fold}.pth"
-        mgr.download_artifact(f"dae-encoder-fold_{fold}:latest", encoder_path, run)
+        mgr.download_artifact(f"dae-encoder-fold-{fold}:latest", encoder_path, run)
 
         encoder = Encoder(input_dim=CONFIG["input_dim"], dropout=CONFIG["dropout"]).to(device)
         encoder.load_state_dict(torch.load(encoder_path, map_location=device))
@@ -267,34 +269,34 @@ def main():
         model = MaskedSupervisedRegressor(encoder).to(device)
         criterion = nn.MSELoss()
 
-        # Phase 1: linear probe, encoder freeze
+        # Phase 1
         for p in model.encoder.parameters():
             p.requires_grad = False
-
         opt1 = optim.Adam(model.head.parameters(), lr=CONFIG["lr_head_init"])
 
         for epoch in range(int(CONFIG["epochs_phase_1"])):
-            train_online = train_one_epoch(model, train_loader, criterion, opt1, device)
-            train_eval = eval_loss(model, train_loader, criterion, device)
-            val_eval = eval_loss(model, val_loader, criterion, device)
+            train_one_epoch(model, train_loader, criterion, opt1, device)
+
+            train_metrics = eval_metrics(model, train_loader, criterion, device)
+            val_metrics = eval_metrics(model, val_loader, criterion, device)
 
             run.log({
-                "phase": 1, "epoch": epoch,
-                "train_loss_online": train_online,
-                "train_loss_eval": train_eval,
-                "val_loss": val_eval
+                "phase": 1,
+                "epoch": epoch,
+                "train_r2": train_metrics["r2"],
+                "val_r2": val_metrics["r2"],
+                "train_mse": train_metrics["mse"],
+                "val_mse": val_metrics["mse"],
             })
 
             print(
-                f"P1 Epoch {epoch+1} | Loss: {train_online:.4f} | "
-                f"Loss(eval): {train_eval:.4f} | Val: {val_eval:.4f}"
+                f"P1 Epoch {epoch+1} | Train R2 {train_metrics['r2']:.4f} | "
+                f"Val R2 {val_metrics['r2']:.4f}"
             )
 
-        # Phase 2: fine-tune (freeze 1st linear layer only)
+        # Phase 2
         for p in model.encoder.parameters():
             p.requires_grad = True
-
-        # encoder.net: [0]=Linear, [2]=Dropout, [3]=Linear, [5]=Dropout, [6]=Linear
         for p in model.encoder.net[0].parameters():
             p.requires_grad = False
 
@@ -307,28 +309,31 @@ def main():
             weight_decay=CONFIG["weight_decay"],
         )
 
-        best_val = float("inf")
+        best_val_r2 = -1e18
         best_path = f"temp_best_reg_{fold}.pth"
 
         for epoch in range(int(CONFIG["epochs_phase_2"])):
-            train_online = train_one_epoch(model, train_loader, criterion, opt2, device)
-            train_eval = eval_loss(model, train_loader, criterion, device)
-            val_eval = eval_loss(model, val_loader, criterion, device)
+            train_one_epoch(model, train_loader, criterion, opt2, device)
+
+            train_metrics = eval_metrics(model, train_loader, criterion, device)
+            val_metrics = eval_metrics(model, val_loader, criterion, device)
 
             run.log({
-                "phase": 2, "epoch": epoch,
-                "train_loss_online": train_online,
-                "train_loss_eval": train_eval,
-                "val_loss": val_eval
+                "phase": 2,
+                "epoch": epoch,
+                "train_r2": train_metrics["r2"],
+                "val_r2": val_metrics["r2"],
+                "train_mse": train_metrics["mse"],
+                "val_mse": val_metrics["mse"],
             })
 
             print(
-                f"P2 Epoch {epoch+1} | Loss: {train_online:.4f} | "
-                f"Loss(eval): {train_eval:.4f} | Val: {val_eval:.4f}"
+                f"P2 Epoch {epoch+1} | Train R2 {train_metrics['r2']:.4f} | "
+                f"Val R2 {val_metrics['r2']:.4f}"
             )
 
-            if val_eval < best_val:
-                best_val = val_eval
+            if val_metrics["r2"] > best_val_r2:
+                best_val_r2 = val_metrics["r2"]
                 torch.save(model.state_dict(), best_path)
 
         model.load_state_dict(torch.load(best_path, map_location=device))

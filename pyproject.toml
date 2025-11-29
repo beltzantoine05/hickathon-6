@@ -18,13 +18,12 @@ dependencies = [
     "plotly>=6.5.0",
     "python-dotenv>=1.2.1",
     "scikit-learn>=1.7.2",
-    "torch>=2.9.1",
     "wandb>=0.23.0",
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src"]
+packages = ["src/hickathon_six"]
 
 
 [project.scripts]
-hickathon6 = "src.main:main"
+hickathon6 = "hickathon_six.main:main"
