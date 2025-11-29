@@ -6,10 +6,11 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+
 class ArtifactManager:
     def __init__(self, bucket_name=None):
         self.bucket = bucket_name or os.getenv("MINIO_BUCKET", "ml-project-artifacts")
-        
+
         # Client Boto3 pour ton stockage MinIO personnel (Backup souverain)
         # On ne configure plus les variables d'environnement globales pour ne pas perturber W&B
         self.s3_client = boto3.client(
@@ -29,7 +30,7 @@ class ArtifactManager:
                 self.s3_client.create_bucket(Bucket=self.bucket)
                 print(f"[MinIO] Bucket '{self.bucket}' created.")
             except Exception:
-                pass # On ignore si déjà créé ou erreur mineure
+                pass  # On ignore si déjà créé ou erreur mineure
 
     def log_model(self, local_path, artifact_name, run, metadata=None, aliases=None):
         """
@@ -53,11 +54,11 @@ class ArtifactManager:
             type='model',
             metadata=metadata
         )
-        
+
         # CHANGEMENT ICI : On utilise add_file au lieu de add_reference
         # Cela envoie le fichier vers le cloud W&B
         artifact.add_file(local_path)
-        
+
         run.log_artifact(artifact, aliases=aliases or [])
         print(f"[W&B] Modèle uploadé et versionné : {artifact_name}")
 
@@ -66,30 +67,30 @@ class ArtifactManager:
         Télécharge le fichier directement depuis W&B.
         """
         print(f"[W&B] Téléchargement de {artifact_name}:latest ...")
-        
+
         # 1. On récupère l'artefact
         artifact = run.use_artifact(artifact_name + ":latest")
-        
+
         # 2. On laisse W&B télécharger le fichier dans un dossier cache
         # root=os.path.dirname(local_path) force le download dans le dossier voulu
         download_dir = artifact.download(root=os.path.dirname(local_path))
-        
+
         # 3. W&B garde le nom de fichier original lors de l'upload.
         # On doit renommer ou s'assurer que le fichier a le nom attendu par notre script.
-        
+
         # On cherche le fichier .pth dans le dossier de téléchargement
         downloaded_files = [f for f in os.listdir(download_dir) if f.endswith('.pth')]
-        
+
         if not downloaded_files:
-             raise FileNotFoundError("Aucun fichier .pth trouvé dans l'artefact W&B")
-             
+            raise FileNotFoundError("Aucun fichier .pth trouvé dans l'artefact W&B")
+
         # Le fichier téléchargé par W&B
         source_file = os.path.join(download_dir, downloaded_files[0])
-        
+
         # Si le nom n'est pas celui attendu par local_path, on renomme
         if os.path.abspath(source_file) != os.path.abspath(local_path):
             if os.path.exists(local_path):
                 os.remove(local_path)
             os.rename(source_file, local_path)
-            
+
         return local_path

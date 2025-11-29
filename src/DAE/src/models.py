@@ -1,83 +1,100 @@
 import torch
 import torch.nn as nn
 
+
 class NoiseInjection(nn.Module):
-    """
-    S'applique maintenant sur l'entrée concaténée (220 dim).
-    Le std_vector fourni devra donc faire 220 de long.
-    """
-    def __init__(self, alpha=0.1):
+    def __init__(self, alpha: float = 0.1):
         super().__init__()
         self.alpha = alpha
 
-    def forward(self, x, std_vector):
-        if self.training and self.alpha > 0:
-            noise = torch.randn_like(x)
-            return x + self.alpha * std_vector * noise
-        return x
+    def forward(
+        self,
+        values: torch.Tensor,
+        mask: torch.Tensor,
+        std_vector_vals: torch.Tensor,
+        apply_noise: bool,
+    ) -> torch.Tensor:
+        if not (apply_noise and self.alpha > 0):
+            return values
+
+        stdv = std_vector_vals.view(1, -1).to(device=values.device, dtype=values.dtype)
+        noise = torch.randn_like(values)
+        return values + (self.alpha * noise * stdv * mask)
+
 
 class Encoder(nn.Module):
-    """
-    Input Dim passe par défaut à 220 (110 features + 110 masques)
-    """
-    def __init__(self, input_dim=220): # <--- CHANGE ICI
+    def __init__(self, input_dim: int = 220, dropout: float = 0.1):
         super().__init__()
-        
-        self.layer_1 = nn.Linear(input_dim, 256)
-        self.layer_2 = nn.Linear(256, 128)
-        self.layer_3 = nn.Linear(128, 64)
-        
-        self.act = nn.GELU()
+        self.net = nn.Sequential(
+            nn.Linear(input_dim, 256),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(256, 128),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(128, 64),
+            nn.GELU(),
+        )
 
-    def forward(self, x):
-        x = self.act(self.layer_1(x))
-        x = self.act(self.layer_2(x))
-        x = self.act(self.layer_3(x))
-        return x
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.net(x)
+
 
 class Decoder(nn.Module):
-    """
-    Output Dim reste à 110 (On reconstruit seulement les features)
-    """
-    def __init__(self, output_dim=110): # <--- RESTE 110
+    def __init__(self, output_dim: int = 110):
         super().__init__()
-        
         self.net = nn.Sequential(
             nn.Linear(64, 128),
             nn.GELU(),
             nn.Linear(128, 256),
             nn.GELU(),
-            nn.Linear(256, output_dim) # Reconstruction des 110 features originales
+            nn.Linear(256, output_dim),
         )
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.net(x)
 
+
 class DAE(nn.Module):
-    def __init__(self, input_dim=220, output_dim=110, alpha=0.1):
+    def __init__(
+        self,
+        input_dim: int = 220,
+        output_dim: int = 110,
+        alpha: float = 0.1,
+        dropout: float = 0.1,
+    ):
         super().__init__()
+        self.output_dim = output_dim
         self.noise_layer = NoiseInjection(alpha)
-        self.encoder = Encoder(input_dim)
-        self.decoder = Decoder(output_dim)
+        self.encoder = Encoder(input_dim=input_dim, dropout=dropout)
+        self.decoder = Decoder(output_dim=output_dim)
 
-    def forward(self, x, std_vector=None):
-        # x est de dimension 220 ici (Values + Mask)
+    def forward(
+        self,
+        x: torch.Tensor,
+        std_vector: torch.Tensor | None = None,
+        apply_noise: bool = False,
+    ) -> torch.Tensor:
+        values = x[:, : self.output_dim]
+        mask = x[:, self.output_dim :]
+
+        values = values * mask
+
         if std_vector is not None:
-            x_noisy = self.noise_layer(x, std_vector)
-        else:
-            x_noisy = x
-            
-        latent = self.encoder(x_noisy)
-        reconstruction = self.decoder(latent) # Sortie 110
-        return reconstruction
+            std_vals = std_vector[: self.output_dim]
+            values = self.noise_layer(values, mask, std_vals, apply_noise=apply_noise)
 
-# La classe SupervisedRegressor reste inchangée, elle prendra juste l'encoder modifié
+        x_in = torch.cat([values, mask], dim=1)
+        latent = self.encoder(x_in)
+        return self.decoder(latent)
+
+
 class SupervisedRegressor(nn.Module):
     def __init__(self, encoder: Encoder):
         super().__init__()
         self.encoder = encoder
         self.head = nn.Linear(64, 1)
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         features = self.encoder(x)
         return self.head(features)
