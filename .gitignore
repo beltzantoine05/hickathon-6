@@ -5,3 +5,4 @@ __pycache__/
 X_train.csv
 y_train.csv
 temp*
+wandb/

@@ -47,7 +47,7 @@ def check_environment():
         print("   .env trouvé.")
 
     # 2. Vérif des données
-    data_dir = os.path.join("..", "datas") # Selon ton chemin précédent
+    data_dir = os.path.join("datas") # Selon ton chemin précédent
     if not os.path.exists(data_dir):
          print(f"⚠️  ATTENTION : Le dossier {data_dir} semble absent (vérifie tes chemins).")
     
@@ -62,7 +62,7 @@ def main():
 
     # --- ÉTAPE 1 : Denoising Auto-Encoder ---
     # Produit : Scaler, Imputer, Encoder Weights (envoyés sur MinIO/W&B)
-    run_step("train_dae.py", "1. Pré-entraînement DAE (Unsupervised)")
+    run_step("src/train_dae.py", "1. Pré-entraînement DAE (Unsupervised)")
 
     print("\n⏳ Pause de 2 secondes pour assurer la propagation des artefacts...\n")
     time.sleep(2)
@@ -70,7 +70,7 @@ def main():
     # --- ÉTAPE 2 : Supervised Fine-tuning ---
     # Consomme : Les artefacts de l'étape 1 via W&B (:latest)
     # Produit : Modèle final de régression et Embedding final
-    run_step("train_regressor.py", "2. Fine-tuning Supervisé")
+    run_step("src/train_regressor.py", "2. Fine-tuning Supervisé")
 
     print("\n" + "=" * 60)
     print("🎉 PIPELINE TERMINÉ AVEC SUCCÈS !")
