@@ -3,6 +3,8 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 from sklearn.model_selection import KFold
+from sklearn.impute import SimpleImputer
+from sklearn.preprocessing import StandardScaler
 import numpy as np
 import wandb
 import joblib
@@ -60,6 +62,8 @@ COLUMNS_TO_LOAD = [
     'science_q19_total_timing'
 ]
 
+N_FEATS = 110
+
 # Configuration du Fine-tuning
 CONFIG = {
     "project_name": "ml_project_embedding",
@@ -70,6 +74,7 @@ CONFIG = {
 
     # Architecture
     "input_dim": 220,  # 110 features + 110 masques
+    "dropout": 0.1,
 
     # Phase 1: Linear Probe
     "lr_head_init": 1e-3,
@@ -80,6 +85,10 @@ CONFIG = {
     "lr_head_finetune": 3e-4,
     "epochs_phase_2": 20,
     "weight_decay": 1e-4,
+
+    # Timing preprocessing (doit être identique à train_dae.py)
+    "timing_winsor_q": 0.999,
+    "timing_nonneg": True,
 
     "device": "cuda" if torch.cuda.is_available() else "cpu"
 }
@@ -97,35 +106,32 @@ def load_data_and_targets():
 
     print("[Data] Chargement des CSV...")
 
-    # 1. Chargement X
-    df_x = pd.read_csv(x_path)
+    # 1. Chargement avec index
+    df_x = pd.read_csv(x_path, index_col=0)
+    df_y = pd.read_csv(y_path, index_col=0)
 
-    # Filtre Colonnes
-    missing_cols = [c for c in COLUMNS_TO_LOAD if c not in df_x.columns]
+    print(f"[Data] X shape avant join: {df_x.shape}, Y shape avant join: {df_y.shape}")
+
+    # 2. Inner join sur l'index pour garantir l'alignement
+    df_merged = df_x.join(df_y[["MathScore"]], how="inner")
+    
+    print(f"[Data] Shape après join: {df_merged.shape}")
+    print(f"[Data] Lignes perdues lors du join: X={len(df_x) - len(df_merged)}, Y={len(df_y) - len(df_merged)}")
+
+    # 3. Vérifier les colonnes features
+    missing_cols = [c for c in COLUMNS_TO_LOAD if c not in df_merged.columns]
     if missing_cols:
         raise ValueError(f"Colonnes manquantes dans X : {missing_cols}")
 
-    df_x = df_x[COLUMNS_TO_LOAD]
-    X = df_x.to_numpy(dtype=np.float32)
+    # 4. Séparer X et Y depuis le DataFrame joint
+    X = df_merged[COLUMNS_TO_LOAD].to_numpy(dtype=np.float32)
+    Y = df_merged["MathScore"].to_numpy(dtype=np.float32)
 
-    # 2. Chargement Y
-    df_y = pd.read_csv(y_path)
-    Y = df_y.to_numpy(dtype=np.float32)
-    if Y.ndim > 1: Y = Y.squeeze()
-
-    # Check alignement initial
-    assert len(X) == len(Y), "X et Y n'ont pas la même longueur !"
-
-    # 3. Filtre Lignes (Condition < 100 NaNs)
+    # 5. Filtre Lignes (Condition < 100 NaNs sur X)
     initial_len = len(X)
-
-    # Compte des NaNs par ligne sur X
     n_missing = np.isnan(X).sum(axis=1)
-
-    # Masque booléen
     mask_keep = n_missing < 100
 
-    # Application du masque sur X ET Y
     X_clean = X[mask_keep]
     Y_clean = Y[mask_keep]
 
@@ -164,25 +170,66 @@ def validate(model, loader, criterion, device):
     return running_loss / len(loader.dataset)
 
 
-def preprocess_data(X_raw, imputer, scaler):
+def timing_indices() -> list[int]:
+    """Retourne les indices des colonnes de timing."""
+    return [i for i, c in enumerate(COLUMNS_TO_LOAD) if c.endswith("_total_timing")]
+
+
+def fit_timing_caps(X_raw: np.ndarray, idx: list[int], q: float) -> dict[int, float]:
+    """Calcule les plafonds (caps) pour les colonnes de timing."""
+    caps: dict[int, float] = {}
+    for j in idx:
+        col = X_raw[:, j]
+        obs = col[~np.isnan(col)]
+        obs = obs[np.isfinite(obs)]
+        if obs.size == 0:
+            caps[j] = np.nan
+        else:
+            caps[j] = float(np.quantile(obs, q))
+    return caps
+
+
+def apply_timing_transform(X_raw: np.ndarray, idx: list[int], caps: dict[int, float]) -> np.ndarray:
+    """Applique la transformation aux colonnes de timing (caps + log1p)."""
+    X = X_raw.copy()
+    for j in idx:
+        col = X[:, j]
+        if CONFIG["timing_nonneg"]:
+            col = np.where(np.isnan(col), col, np.maximum(col, 0.0))
+
+        cap = caps.get(j, np.nan)
+        if not np.isnan(cap):
+            col = np.where(np.isnan(col), col, np.minimum(col, cap))
+
+        col = np.log1p(col)
+        X[:, j] = col.astype(np.float32)
+    return X
+
+
+def preprocess_data(X_raw: np.ndarray, imputer, scaler, caps: dict[int, float]) -> np.ndarray:
     """
-    Applique la transformation rigoureuse 220 dims :
-    1. Calcul Masque
-    2. Imputation (Transform)
-    3. Scaling (Transform)
-    4. Concaténation
+    Applique le preprocessing complet (identique à train_dae.py) :
+    1. Transformation des timings (caps + log1p)
+    2. Calcul du masque
+    3. Imputation
+    4. Scaling
+    5. Concaténation [Values, Mask] -> 220 dims
     """
-    # 1. Masque (1 = Present, 0 = Absent)
-    mask = (~np.isnan(X_raw)).astype(np.float32)
+    # 1. Transformation des timings
+    tidx = timing_indices()
+    X_transformed = apply_timing_transform(X_raw, tidx, caps)
 
-    # 2. Imputation (Utilise l'imputer chargé)
-    X_imputed = imputer.transform(X_raw)
+    # 2. Masque (1 = Present, 0 = Absent)
+    mask = (~np.isnan(X_transformed)).astype(np.float32)
 
-    # 3. Scaling (Utilise le scaler chargé)
-    X_scaled = scaler.transform(X_imputed)
+    # 3. Imputation
+    X_imputed = imputer.transform(X_transformed)
 
-    # 4. Concaténation [Values, Mask] -> Dim 220
-    X_final = np.hstack([X_scaled, mask])
+    # 4. Scaling
+    X_scaled = scaler.transform(X_imputed).astype(np.float32)
+
+    # 5. Concaténation [Values, Mask] -> Dim 220
+    X_final = np.hstack([X_scaled, mask]).astype(np.float32)
 
     return X_final
 
@@ -208,28 +255,42 @@ def main():
         )
 
         # -----------------------------------------------------------
-        # 1. TÉLÉCHARGEMENT DES ARTEFACTS (Imputer + Scaler + Encoder)
+        # 1. TÉLÉCHARGEMENT DE L'ENCODEUR PRÉ-ENTRAÎNÉ
         # -----------------------------------------------------------
-
-        # A. Imputer
-        imputer_path = f"dl_imputer_fold_{fold}.pkl"
-        mgr.download_artifact(f"imputer-fold-{fold}", imputer_path, run)
-        imputer = joblib.load(imputer_path)
-
-        # B. Scaler
-        scaler_path = f"dl_scaler_fold_{fold}.pkl"
-        mgr.download_artifact(f"scaler-fold-{fold}", scaler_path, run)
-        scaler = joblib.load(scaler_path)
-
-        # C. Encoder Weights
         encoder_path = f"dl_encoder_fold_{fold}.pth"
-        mgr.download_artifact(f"dae-masked-encoder-fold-{fold}", encoder_path, run)
+        mgr.download_artifact(f"dae-encoder-fold_{fold}", encoder_path, run)
 
         # -----------------------------------------------------------
-        # 2. PREPROCESSING (Miroir du DAE)
+        # 2. PREPROCESSING (identique à train_dae.py)
         # -----------------------------------------------------------
-        X_train = preprocess_data(X_raw_all[train_idx], imputer, scaler)
-        X_val = preprocess_data(X_raw_all[val_idx], imputer, scaler)
+        X_train_raw = X_raw_all[train_idx]
+        X_val_raw = X_raw_all[val_idx]
+
+        # A. Fit timing caps sur le train
+        tidx = timing_indices()
+        caps = fit_timing_caps(X_train_raw, tidx, q=float(CONFIG["timing_winsor_q"]))
+        
+        # B. Appliquer la transformation timing
+        X_train_t = apply_timing_transform(X_train_raw, tidx, caps)
+        X_val_t = apply_timing_transform(X_val_raw, tidx, caps)
+
+        # C. Fit imputer sur train
+        imputer = SimpleImputer(strategy="mean", keep_empty_features=True)
+        X_train_imp = imputer.fit_transform(X_train_t)
+        X_val_imp = imputer.transform(X_val_t)
+
+        # D. Fit scaler sur train
+        scaler = StandardScaler()
+        X_train_scaled = scaler.fit_transform(X_train_imp).astype(np.float32)
+        X_val_scaled = scaler.transform(X_val_imp).astype(np.float32)
+
+        # E. Créer les masques
+        mask_train = (~np.isnan(X_train_t)).astype(np.float32)
+        mask_val = (~np.isnan(X_val_t)).astype(np.float32)
+
+        # F. Concaténer [Values, Mask]
+        X_train = np.hstack([X_train_scaled, mask_train]).astype(np.float32)
+        X_val = np.hstack([X_val_scaled, mask_val]).astype(np.float32)
 
         Y_train, Y_val = Y_all[train_idx], Y_all[val_idx]
 
@@ -243,9 +304,8 @@ def main():
         # -----------------------------------------------------------
         # 3. INITIALISATION DU MODÈLE
         # -----------------------------------------------------------
-        # Note: Input dim est maintenant 220
-        encoder = Encoder(input_dim=CONFIG["input_dim"])
-        encoder.load_state_dict(torch.load(encoder_path))
+        encoder = Encoder(input_dim=CONFIG["input_dim"], dropout=CONFIG["dropout"])
+        encoder.load_state_dict(torch.load(encoder_path, map_location=device))
 
         model = SupervisedRegressor(encoder).to(device)
         criterion = nn.MSELoss()
@@ -266,22 +326,25 @@ def main():
             print(f"P1 Epoch {epoch + 1} | Val: {val_loss:.4f}")
 
         # -----------------------------------------------------------
-        # 5. PHASE 2 : FINE-TUNING (Partial Unfreeze)
+        # 5. PHASE 2 : FINE-TUNING (Unfreeze progressif)
         # -----------------------------------------------------------
         print("--> Phase 2: Fine-tuning")
 
-        # Unfreeze total
+        # Unfreeze toutes les couches de l'encodeur
         for param in model.encoder.parameters():
             param.requires_grad = True
 
-        # Freeze PREMIÈRE COUCHE (Celle qui map 220 -> 256)
-        # C'est important car elle a appris à fusionner Masque et Valeur
-        for param in model.encoder.layer_1.parameters():
+        # Optimizer avec learning rates différenciés
+        # Note: l'encoder est un Sequential, donc on accède aux couches via net[index]
+        # Couches: net[0]=Linear(220,256), net[3]=Linear(256,128), net[6]=Linear(128,64)
+        
+        # On peut freeze la première couche qui a appris la fusion masque+valeurs
+        for param in model.encoder.net[0].parameters():
             param.requires_grad = False
 
         optimizer_p2 = optim.AdamW([
-            {'params': model.encoder.layer_2.parameters(), 'lr': CONFIG["lr_encoder"]},
-            {'params': model.encoder.layer_3.parameters(), 'lr': CONFIG["lr_encoder"]},
+            {'params': model.encoder.net[3].parameters(), 'lr': CONFIG["lr_encoder"]},  # Layer 256->128
+            {'params': model.encoder.net[6].parameters(), 'lr': CONFIG["lr_encoder"]},  # Layer 128->64
             {'params': model.head.parameters(), 'lr': CONFIG["lr_head_finetune"]}
         ], weight_decay=CONFIG["weight_decay"])
 
@@ -316,8 +379,9 @@ def main():
         run.finish()
 
         # Cleanup
-        for f in [imputer_path, scaler_path, encoder_path, f"temp_best_reg_{fold}.pth", reg_path, emb_path]:
-            if os.path.exists(f): os.remove(f)
+        for f in [encoder_path, f"temp_best_reg_{fold}.pth", reg_path, emb_path]:
+            if os.path.exists(f): 
+                os.remove(f)
 
 
 if __name__ == "__main__":
