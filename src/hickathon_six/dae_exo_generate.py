@@ -8,6 +8,7 @@ def build_config():
     cfg = dae_exo.build_config()
     cfg.generate_embeddings_only = True
     cfg.use_pretrained_full_encoder = True
+    cfg.wandb.upload_artifacts = False
     return cfg
 
 
