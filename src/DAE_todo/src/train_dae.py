@@ -101,7 +101,7 @@ CONFIG = {
 
 
 def load_data_with_nans() -> np.ndarray:
-    file_path = os.path.join("datas", "X_train.csv")
+    file_path = os.path.join("data", "X_train.csv")
     if not os.path.exists(file_path):
         raise FileNotFoundError(f"Fichier introuvable : {file_path}")
 

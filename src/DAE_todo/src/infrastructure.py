@@ -11,26 +11,6 @@ class ArtifactManager:
     def __init__(self, bucket_name=None):
         self.bucket = bucket_name or os.getenv("MINIO_BUCKET", "ml-project-artifacts")
 
-        # Client Boto3 pour ton stockage MinIO personnel (Backup souverain)
-        # On ne configure plus les variables d'environnement globales pour ne pas perturber W&B
-        self.s3_client = boto3.client(
-            's3',
-            endpoint_url=os.getenv('MINIO_ENDPOINT'),
-            aws_access_key_id=os.getenv('MINIO_ACCESS_KEY'),
-            aws_secret_access_key=os.getenv('MINIO_SECRET_KEY'),
-            aws_session_token=os.getenv('MINIO_SESSION_TOKEN', None)
-        )
-        self._ensure_bucket_exists()
-
-    def _ensure_bucket_exists(self):
-        try:
-            self.s3_client.head_bucket(Bucket=self.bucket)
-        except ClientError:
-            try:
-                self.s3_client.create_bucket(Bucket=self.bucket)
-                print(f"[MinIO] Bucket '{self.bucket}' created.")
-            except Exception:
-                pass  # On ignore si déjà créé ou erreur mineure
 
     def log_model(self, local_path, artifact_name, run, metadata=None, aliases=None):
         """
@@ -39,14 +19,6 @@ class ArtifactManager:
         """
         if not os.path.exists(local_path):
             raise FileNotFoundError(f"File not found: {local_path}")
-
-        # --- A. BACKUP MINIO (Optionnel mais demandé) ---
-        try:
-            s3_key = f"models/{run.id}/{artifact_name}.pth"
-            self.s3_client.upload_file(local_path, self.bucket, s3_key)
-            print(f"[MinIO] Backup uploadé : s3://{self.bucket}/{s3_key}")
-        except Exception as e:
-            print(f"[MinIO] Warning: Backup échoué ({e}), mais on continue vers W&B.")
 
         # --- B. UPLOAD W&B (La partie critique pour le pipeline) ---
         artifact = wandb.Artifact(

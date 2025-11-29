@@ -132,10 +132,10 @@ def apply_timing_transform(X_raw: np.ndarray, idx: list[int], caps: dict[int, fl
 
 
 def load_data_and_targets():
-    x_path = os.path.join("datas", "X_train.csv")
-    y_path = os.path.join("datas", "y_train.csv")
+    x_path = os.path.join("data", "X_train.csv")
+    y_path = os.path.join("data", "y_train.csv")
     if not os.path.exists(x_path) or not os.path.exists(y_path):
-        raise FileNotFoundError("Fichiers introuvables dans datas/")
+        raise FileNotFoundError("Fichiers introuvables dans data/")
 
     df_x = pd.read_csv(x_path, index_col=0)
     df_y = pd.read_csv(y_path, index_col=0)
