@@ -19,7 +19,8 @@ class ArtifactManager:
             's3',
             endpoint_url=os.getenv('MINIO_ENDPOINT'),
             aws_access_key_id=os.getenv('MINIO_ACCESS_KEY'),
-            aws_secret_access_key=os.getenv('MINIO_SECRET_KEY')
+            aws_secret_access_key=os.getenv('MINIO_SECRET_KEY'),
+            aws_session_token=os.getenv('MINIO_SESSION_TOKEN', None)
         )
         self._ensure_bucket_exists()
 

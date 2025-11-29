@@ -5,3 +5,4 @@ __pycache__/
 X_train.csv
 y_train.csv
 temp*
+src/__pycache__/main.cpython-313.pyc
