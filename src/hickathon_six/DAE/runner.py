@@ -1,6 +1,7 @@
 """Pipeline orchestration for DAE pretraining and finetuning."""
 from __future__ import annotations
 
+import copy
 import os
 from dataclasses import replace
 from typing import List, Tuple
@@ -66,9 +67,10 @@ class PipelineRunner:
         self, X_df: pd.DataFrame, y: pd.Series | None = None
     ) -> Tuple[pd.DataFrame, pd.Series | None]:
         threshold = self.config.preprocessing.max_missing_per_row
-        if threshold is None:
+        columns = self.config.preprocessing.columns
+        if threshold is None or not columns:
             return X_df, y
-        missing_counts = X_df.isna().sum(axis=1)
+        missing_counts = X_df[columns].isna().sum(axis=1)
         keep_mask = missing_counts < threshold
         removed = int((~keep_mask).sum())
         if removed > 0:
@@ -161,7 +163,7 @@ class PipelineRunner:
             if improved:
                 best_val_clean = val_clean
                 patience_counter = 0
-                best_encoder = model.encoder.state_dict()
+                best_encoder = copy.deepcopy(model.encoder.state_dict())
             else:
                 if epoch + 1 >= dae_cfg.min_epochs:
                     patience_counter += 1
