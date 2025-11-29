@@ -1,9 +1,10 @@
 """Pipeline orchestration for DAE pretraining and finetuning."""
 from __future__ import annotations
 
+import copy
 import os
 from dataclasses import replace
-from typing import List, Tuple
+from typing import Dict, List, Tuple
 
 import numpy as np
 import pandas as pd
@@ -34,6 +35,9 @@ class PipelineRunner:
         self.device = torch.device(config.resolve_device())
         seed_everything(config.seed)
 
+        self._artifact_root = os.path.join(self.config.data_dir, "artifacts")
+        os.makedirs(self._artifact_root, exist_ok=True)
+
     def load_features(self, filename: str) -> pd.DataFrame:
         print(f"Loading {filename}...")
         path = os.path.join(self.config.data_dir, filename)
@@ -54,11 +58,25 @@ class PipelineRunner:
             self.generate_embeddings(X_train_df, X_test_df)
             return
 
+        encoder_states = None
         if not self.config.train_full_only and self.config.run_kfold:
-            self.train_dae_kfold(X_train_df)
-            self.train_regressor_kfold(X_train_df, y_train)
+            if self.config.load_fold_encoders_from_artifacts:
+                encoder_states = self._download_fold_encoders(
+                    self.config.dae.n_splits, self.config.fold_indices
+                )
+            else:
+                encoder_states = self.train_dae_kfold(X_train_df)
+            self.train_regressor_kfold(X_train_df, y_train, encoder_states)
 
-        encoder_state, preprocessor = self.train_dae_full(X_train_df)
+        if not self.config.run_full_stage:
+            return
+
+        if self.config.use_pretrained_full_encoder:
+            encoder_state = self._download_encoder(self.config.encoder_artifact_name)
+            preprocessor = Preprocessor(self.config.preprocessing).fit(X_train_df)
+            dae_state = self._download_encoder(self.config.dae_model_artifact_name)
+        else:
+            encoder_state, dae_state, preprocessor = self.train_dae_full(X_train_df)
         finetuned_state, finetune_preproc = self.train_regressor_full(X_train_df, y_train, encoder_state)
         self.generate_embeddings(X_train_df, X_test_df, encoder_state, finetuned_state, preprocessor)
 
@@ -66,9 +84,10 @@ class PipelineRunner:
         self, X_df: pd.DataFrame, y: pd.Series | None = None
     ) -> Tuple[pd.DataFrame, pd.Series | None]:
         threshold = self.config.preprocessing.max_missing_per_row
-        if threshold is None:
+        columns = self.config.preprocessing.columns
+        if threshold is None or not columns:
             return X_df, y
-        missing_counts = X_df.isna().sum(axis=1)
+        missing_counts = X_df[columns].isna().sum(axis=1)
         keep_mask = missing_counts < threshold
         removed = int((~keep_mask).sum())
         if removed > 0:
@@ -77,11 +96,34 @@ class PipelineRunner:
         y_filtered = y.loc[keep_mask] if y is not None else None
         return X_filtered, y_filtered
 
-    def train_dae_kfold(self, X_df: pd.DataFrame) -> List[FlexibleEncoder]:
+    def _save_state_locally(self, state: dict, filename: str) -> str:
+        path = os.path.join(self._artifact_root, filename)
+        torch.save(state, path)
+        print(f"[Artifacts] Saved {filename} -> {path}")
+        return path
+
+    def _load_state_from_local(self, filename: str) -> dict | None:
+        path = os.path.join(self._artifact_root, filename)
+        if os.path.exists(path):
+            print(f"[Artifacts] Loading local artifact {filename} from {path}")
+            return torch.load(path, map_location=self.device)
+        return None
+
+    def _log_artifact(self, run, path: str, artifact_name: str) -> None:
+        if not self.config.wandb.upload_artifacts:
+            return
+        artifact = wandb.Artifact(artifact_name, type="model")
+        artifact.add_file(path, name=os.path.basename(path))
+        run.log_artifact(artifact, aliases=["latest"])
+
+    def train_dae_kfold(self, X_df: pd.DataFrame) -> Dict[int, dict]:
         cfg = self.config
-        encoders: List[FlexibleEncoder] = []
+        encoders: Dict[int, dict] = {}
+        allowed_folds = set(cfg.fold_indices) if cfg.fold_indices is not None else None
         kfold = KFold(n_splits=cfg.dae.n_splits, shuffle=True, random_state=cfg.seed)
         for fold, (train_idx, val_idx) in enumerate(kfold.split(X_df)):
+            if allowed_folds is not None and fold not in allowed_folds:
+                continue
             run = self._start_run(
                 group=cfg.dae_group_name,
                 name=f"{cfg.wandb.run_prefix}-dae-fold-{fold}",
@@ -91,7 +133,7 @@ class PipelineRunner:
             preprocessor = Preprocessor(cfg.preprocessing)
             X_train_scaled, mask_train = preprocessor.fit_transform(X_df.iloc[train_idx])
             X_val_scaled, mask_val = preprocessor.transform(X_df.iloc[val_idx])
-            encoder_state = self._train_single_dae(
+            encoder_state, dae_state = self._train_single_dae(
                 run,
                 X_train_scaled,
                 mask_train,
@@ -101,7 +143,13 @@ class PipelineRunner:
             )
             encoder = self._build_encoder(cfg)
             encoder.load_state_dict(encoder_state)
-            encoders.append(encoder)
+            encoders[fold] = encoder_state
+            filename = f"{cfg.fold_encoder_artifact_prefix}-{fold}.pth"
+            local_path = self._save_state_locally(encoder_state, filename)
+            self._log_artifact(run, local_path, f"{cfg.fold_encoder_artifact_prefix}-{fold}")
+            dae_filename = f"{cfg.fold_dae_model_artifact_prefix}-{fold}.pth"
+            dae_path = self._save_state_locally(dae_state, dae_filename)
+            self._log_artifact(run, dae_path, f"{cfg.fold_dae_model_artifact_prefix}-{fold}")
             run.finish()
         return encoders
 
@@ -113,7 +161,7 @@ class PipelineRunner:
         X_val_scaled: np.ndarray,
         mask_val: np.ndarray,
         cfg: PipelineConfig,
-    ) -> dict:
+    ) -> Tuple[dict, dict]:
         dae_cfg = cfg.dae
         std_concat, cap, nonzero = make_std_vector_from_observed(
             X_train_scaled,
@@ -138,6 +186,7 @@ class PipelineRunner:
 
         best_val_clean = float("inf")
         best_encoder = None
+        best_model = None
         patience_counter = 0
 
         for epoch in range(dae_cfg.epochs):
@@ -161,13 +210,16 @@ class PipelineRunner:
             if improved:
                 best_val_clean = val_clean
                 patience_counter = 0
-                best_encoder = model.encoder.state_dict()
+                best_encoder = copy.deepcopy(model.encoder.state_dict())
+                best_model = copy.deepcopy(model.state_dict())
             else:
                 if epoch + 1 >= dae_cfg.min_epochs:
                     patience_counter += 1
                     if patience_counter >= dae_cfg.patience:
                         break
-        return best_encoder if best_encoder is not None else model.encoder.state_dict()
+        final_encoder = best_encoder if best_encoder is not None else model.encoder.state_dict()
+        final_model = best_model if best_model is not None else model.state_dict()
+        return final_encoder, final_model
 
     def _train_dae_epoch(self, model, loader, optimizer, std_vector_tensor, clip_norm: float) -> float:
         model.train()
@@ -227,27 +279,29 @@ class PipelineRunner:
             config=wandb_config,
         )
 
-    def train_dae_full(self, X_df: pd.DataFrame) -> Tuple[dict, Preprocessor]:
+    def train_dae_full(self, X_df: pd.DataFrame) -> Tuple[dict, dict, Preprocessor]:
         cfg = self.config
         run = self._start_run(cfg.dae_group_name, f"{cfg.wandb.run_prefix}-dae-full", "dae-full", cfg)
         preprocessor = Preprocessor(cfg.preprocessing)
         X_scaled, mask = preprocessor.fit_transform(X_df)
         dae_cfg = replace(cfg.dae, epochs=cfg.dae.final_epochs)
-        encoder_state = self._train_single_dae(run, X_scaled, mask, X_scaled, mask, replace(cfg, dae=dae_cfg))
-        if cfg.wandb.upload_artifacts:
-            encoder_path = "dae_encoder_full.pth"
-            torch.save(encoder_state, encoder_path)
-            artifact = wandb.Artifact(cfg.encoder_artifact_name, type="model")
-            artifact.add_file(encoder_path)
-            run.log_artifact(artifact, aliases=["latest"])
-            os.remove(encoder_path)
+        encoder_state, dae_state = self._train_single_dae(run, X_scaled, mask, X_scaled, mask, replace(cfg, dae=dae_cfg))
+        encoder_path = self._save_state_locally(encoder_state, "dae_encoder_full.pth")
+        dae_model_path = self._save_state_locally(dae_state, "dae_model_full.pth")
+        self._log_artifact(run, encoder_path, cfg.encoder_artifact_name)
+        self._log_artifact(run, dae_model_path, cfg.dae_model_artifact_name)
         run.finish()
-        return encoder_state, preprocessor
+        return encoder_state, dae_state, preprocessor
 
-    def train_regressor_kfold(self, X_df: pd.DataFrame, y: pd.Series) -> None:
+    def train_regressor_kfold(
+        self, X_df: pd.DataFrame, y: pd.Series, encoder_states: Dict[int, dict] | None = None
+    ) -> None:
         cfg = self.config
+        allowed_folds = set(cfg.fold_indices) if cfg.fold_indices is not None else None
         kfold = KFold(n_splits=cfg.dae.n_splits, shuffle=True, random_state=cfg.seed)
         for fold, (train_idx, val_idx) in enumerate(kfold.split(X_df)):
+            if allowed_folds is not None and fold not in allowed_folds:
+                continue
             run = self._start_run(
                 group=cfg.finetune_group_name,
                 name=f"{cfg.wandb.run_prefix}-reg-fold-{fold}",
@@ -257,11 +311,34 @@ class PipelineRunner:
             preprocessor = Preprocessor(cfg.preprocessing)
             X_train_scaled, mask_train = preprocessor.fit_transform(X_df.iloc[train_idx])
             X_val_scaled, mask_val = preprocessor.transform(X_df.iloc[val_idx])
-            encoder_state, _ = self.train_dae_full(X_df.iloc[train_idx])
+            if encoder_states is None:
+                filename = f"{cfg.fold_encoder_artifact_prefix}-{fold}.pth"
+                artifact_name = f"{cfg.fold_encoder_artifact_prefix}-{fold}"
+                encoder_state = self._load_state_from_local(filename) or self._download_encoder(artifact_name)
+            else:
+                encoder_state = encoder_states[fold]
             encoder = self._build_encoder(cfg).to(self.device)
             encoder.load_state_dict(encoder_state)
             model = MaskedSupervisedRegressor(encoder, latent_dim=cfg.architecture.encoder_layers[-1]).to(self.device)
-            self._train_regressor(run, model, preprocessor, X_train_scaled, mask_train, y.iloc[train_idx].to_numpy(), X_val_scaled, mask_val, y.iloc[val_idx].to_numpy())
+            self._train_regressor(
+                run,
+                model,
+                preprocessor,
+                X_train_scaled,
+                mask_train,
+                y.iloc[train_idx].to_numpy(),
+                X_val_scaled,
+                mask_val,
+                y.iloc[val_idx].to_numpy(),
+            )
+            finetuned_path = self._save_state_locally(
+                model.encoder.state_dict(), f"{cfg.finetuned_encoder_artifact_prefix}-{fold}.pth"
+            )
+            self._log_artifact(run, finetuned_path, f"{cfg.finetuned_encoder_artifact_prefix}-{fold}")
+            finetuned_model_path = self._save_state_locally(
+                model.state_dict(), f"{cfg.finetuned_model_artifact_prefix}-{fold}.pth"
+            )
+            self._log_artifact(run, finetuned_model_path, f"{cfg.finetuned_model_artifact_prefix}-{fold}")
             run.finish()
 
     def _train_regressor(
@@ -277,28 +354,30 @@ class PipelineRunner:
         y_val: np.ndarray,
     ) -> None:
         reg_cfg = self.config.regression
+        phase1_epochs = max(7, reg_cfg.epochs_phase_1)
         train_concat = np.hstack([X_train_scaled, mask_train]).astype(np.float32)
         val_concat = np.hstack([X_val_scaled, mask_val]).astype(np.float32)
         train_loader = build_regression_loader(train_concat, y_train, reg_cfg.batch_size, shuffle=True)
         val_loader = build_regression_loader(val_concat, y_val, reg_cfg.batch_size, shuffle=False)
-        criterion = nn.MSELoss()
+        criterion = self._r2_loss
         # phase 1 freeze encoder
         for p in model.encoder.parameters():
             p.requires_grad = False
         opt1 = optim.Adam(model.head.parameters(), lr=reg_cfg.lr_head_init)
-        for epoch in range(reg_cfg.epochs_phase_1):
-            self._train_reg_epoch(model, train_loader, criterion, opt1, reg_cfg.grad_clip_norm)
+        for epoch in range(phase1_epochs):
+            train_loss = self._train_reg_epoch(model, train_loader, criterion, opt1, reg_cfg.grad_clip_norm)
             train_metrics = eval_regression(model, train_loader, criterion, self.device)
             val_metrics = eval_regression(model, val_loader, criterion, self.device)
             print(
-                f"[Finetune P1][Epoch {epoch+1:03d}] train_mse={train_metrics['mse']:.4f} "
-                f"val_mse={val_metrics['mse']:.4f} train_r2={train_metrics['r2']:.4f} "
-                f"val_r2={val_metrics['r2']:.4f}"
+                f"[Finetune P1][Epoch {epoch+1:03d}] loss_r2={train_loss:.4f} "
+                f"train_r2={train_metrics['r2']:.4f} val_r2={val_metrics['r2']:.4f} "
+                f"train_mse={train_metrics['mse']:.4f} val_mse={val_metrics['mse']:.4f}"
             )
             run.log(
                 {
                     "finetune/phase": 1,
-                    "finetune/epoch": epoch,
+                    "finetune/epoch": epoch + 1,
+                    "finetune/loss_r2": train_loss,
                     "finetune/train_r2": train_metrics["r2"],
                     "finetune/val_r2": val_metrics["r2"],
                     "finetune/train_mse": train_metrics["mse"],
@@ -322,18 +401,19 @@ class PipelineRunner:
         best_val = float("-inf")
         patience_counter = 0
         for epoch in range(reg_cfg.epochs_phase_2):
-            self._train_reg_epoch(model, train_loader, criterion, opt2, reg_cfg.grad_clip_norm)
+            train_loss = self._train_reg_epoch(model, train_loader, criterion, opt2, reg_cfg.grad_clip_norm)
             train_metrics = eval_regression(model, train_loader, criterion, self.device)
             val_metrics = eval_regression(model, val_loader, criterion, self.device)
             print(
-                f"[Finetune P2][Epoch {epoch+1:03d}] train_mse={train_metrics['mse']:.4f} "
-                f"val_mse={val_metrics['mse']:.4f} train_r2={train_metrics['r2']:.4f} "
-                f"val_r2={val_metrics['r2']:.4f}"
+                f"[Finetune P2][Epoch {epoch+1:03d}] loss_r2={train_loss:.4f} "
+                f"train_r2={train_metrics['r2']:.4f} val_r2={val_metrics['r2']:.4f} "
+                f"train_mse={train_metrics['mse']:.4f} val_mse={val_metrics['mse']:.4f}"
             )
             run.log(
                 {
                     "finetune/phase": 2,
-                    "finetune/epoch": reg_cfg.epochs_phase_1 + epoch,
+                    "finetune/epoch": epoch + 1,
+                    "finetune/loss_r2": train_loss,
                     "finetune/train_r2": train_metrics["r2"],
                     "finetune/val_r2": val_metrics["r2"],
                     "finetune/train_mse": train_metrics["mse"],
@@ -367,6 +447,15 @@ class PipelineRunner:
             running += loss.item() * xb.size(0)
         return running / len(loader.dataset)
 
+    @staticmethod
+    def _r2_loss(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        target_mean = torch.mean(target)
+        ss_tot = torch.sum((target - target_mean) ** 2)
+        if ss_tot <= 1e-12:
+            return torch.mean((pred - target) ** 2)
+        ss_res = torch.sum((target - pred) ** 2)
+        return ss_res / (ss_tot + 1e-12)
+
     def train_regressor_full(
         self,
         X_df: pd.DataFrame,
@@ -380,6 +469,9 @@ class PipelineRunner:
         train_concat = np.hstack([X_scaled, mask]).astype(np.float32)
         train_x, val_x, train_y, val_y = train_test_split(train_concat, y.to_numpy(), test_size=cfg.regression.holdout_ratio, random_state=cfg.seed)
         model = MaskedSupervisedRegressor(self._build_encoder(cfg).to(self.device), latent_dim=cfg.architecture.encoder_layers[-1]).to(self.device)
+        if encoder_state is None:
+            local_name = "dae_encoder_full.pth"
+            encoder_state = self._load_state_from_local(local_name) or self._download_encoder(cfg.encoder_artifact_name)
         model.encoder.load_state_dict(encoder_state)
         self._train_regressor(
             run,
@@ -394,7 +486,7 @@ class PipelineRunner:
         )
         # final fit on all data for best epoch count
         full_loader = build_regression_loader(train_concat, y.to_numpy(), cfg.regression.batch_size, shuffle=True)
-        criterion = nn.MSELoss()
+        criterion = self._r2_loss
         for p in model.encoder.parameters():
             p.requires_grad = True
         first_linear = next(m for m in model.encoder.net if isinstance(m, nn.Linear))
@@ -409,13 +501,10 @@ class PipelineRunner:
         )
         for _ in range(cfg.regression.final_epochs):
             self._train_reg_epoch(model, full_loader, criterion, opt_final, cfg.regression.grad_clip_norm)
-        if cfg.wandb.upload_artifacts:
-            finetuned_path = "finetuned_encoder_full.pth"
-            torch.save(model.encoder.state_dict(), finetuned_path)
-            artifact = wandb.Artifact(cfg.finetuned_encoder_artifact_name, type="model")
-            artifact.add_file(finetuned_path)
-            run.log_artifact(artifact, aliases=["latest"])
-            os.remove(finetuned_path)
+        finetuned_path = self._save_state_locally(model.encoder.state_dict(), "finetuned_encoder_full.pth")
+        finetuned_model_path = self._save_state_locally(model.state_dict(), "finetuned_model_full.pth")
+        self._log_artifact(run, finetuned_path, cfg.finetuned_encoder_artifact_name)
+        self._log_artifact(run, finetuned_model_path, cfg.finetuned_model_artifact_name)
         run.finish()
         return model.encoder.state_dict(), preprocessor
 
@@ -434,25 +523,45 @@ class PipelineRunner:
             finetuned_state = self._download_encoder(cfg.finetuned_encoder_artifact_name)
         if preprocessor is None:
             preprocessor = Preprocessor(cfg.preprocessing).fit(X_train_df)
-        X_test_scaled, mask_test = preprocessor.transform(X_test_df)
-        concat_test = np.hstack([X_test_scaled, mask_test]).astype(np.float32)
-        encoder = self._build_encoder(cfg).to(self.device)
-        encoder.load_state_dict(encoder_state)
-        encoder.eval()
-        with torch.no_grad():
-            embeddings = encoder(torch.from_numpy(concat_test).to(self.device)).cpu().numpy()
-        emb_df = pd.DataFrame(embeddings, index=X_test_df.index)
-        emb_path = os.path.join(cfg.data_dir, f"{cfg.embedding_prefix}_dae_full.csv")
-        emb_df.to_csv(emb_path)
 
-        # finetuned embeddings
-        finetuned_encoder = self._build_encoder(cfg).to(self.device)
-        finetuned_encoder.load_state_dict(finetuned_state)
-        finetuned_encoder.eval()
-        with torch.no_grad():
-            ft_embeddings = finetuned_encoder(torch.from_numpy(concat_test).to(self.device)).cpu().numpy()
-        ft_path = os.path.join(cfg.data_dir, f"{cfg.embedding_prefix}_finetuned_full.csv")
-        pd.DataFrame(ft_embeddings, index=X_test_df.index).to_csv(ft_path)
+        X_train_scaled, mask_train = preprocessor.transform(X_train_df)
+        X_test_scaled, mask_test = preprocessor.transform(X_test_df)
+
+        def concat_inputs(scaled: np.ndarray, mask: np.ndarray) -> np.ndarray:
+            return np.hstack([scaled, mask]).astype(np.float32)
+
+        concat = {
+            "train": (concat_inputs(X_train_scaled, mask_train), X_train_df.index),
+            "test": (concat_inputs(X_test_scaled, mask_test), X_test_df.index),
+        }
+
+        def compute_embeddings(state: dict) -> Dict[str, np.ndarray]:
+            encoder = self._build_encoder(cfg).to(self.device)
+            encoder.load_state_dict(state)
+            encoder.eval()
+            outputs: Dict[str, np.ndarray] = {}
+            with torch.no_grad():
+                for split, (features, _) in concat.items():
+                    outputs[split] = (
+                        encoder(torch.from_numpy(features).to(self.device))
+                        .cpu()
+                        .numpy()
+                    )
+            return outputs
+
+        base_embeddings = compute_embeddings(encoder_state)
+        finetuned_embeddings = compute_embeddings(finetuned_state)
+
+        def save(embeds: Dict[str, np.ndarray], suffix: str) -> None:
+            for split, (_, indices) in concat.items():
+                path = os.path.join(
+                    cfg.data_dir, f"{cfg.embedding_prefix}_{suffix}_{split}.csv"
+                )
+                pd.DataFrame(embeds[split], index=indices).to_csv(path)
+                print(f"[Embeddings] Saved {split} embeddings -> {path}")
+
+        save(base_embeddings, "dae_full")
+        save(finetuned_embeddings, "finetuned_full")
 
     def _download_encoder(self, artifact_name: str) -> dict:
         cfg = self.config
@@ -467,3 +576,8 @@ class PipelineRunner:
             raise FileNotFoundError("No .pth file in downloaded artifact")
         path = os.path.join(download_dir, pth_files[0])
         return torch.load(path, map_location=self.device)
+
+    def _download_fold_encoders(self, n_splits: int, fold_indices: List[int] | None) -> Dict[int, dict]:
+        prefix = self.config.fold_encoder_artifact_prefix
+        folds = fold_indices if fold_indices is not None else range(n_splits)
+        return {fold: self._download_encoder(f"{prefix}-{fold}") for fold in folds}
