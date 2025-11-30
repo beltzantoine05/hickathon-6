@@ -66,7 +66,7 @@ class RegressionTrainingConfig:
     epochs_phase_1: int = 7
     lr_encoder: float = 3e-5
     lr_head_finetune: float = 3e-4
-    epochs_phase_2: int = 20
+    epochs_phase_2: int = 15
     weight_decay: float = 1e-4
     grad_clip_norm: float = 1.0
     early_stop_patience: int = 5
