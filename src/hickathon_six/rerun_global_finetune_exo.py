@@ -10,6 +10,10 @@ def build_config():
     cfg.train_full_only = True
     cfg.run_kfold = False
     cfg.run_full_stage = True
+    cfg.encoder_artifact_name = "exo-dae-encoder-full"
+    cfg.finetuned_encoder_artifact_name = "exo-finetuned-encoder-full"
+    cfg.dae_model_artifact_name = "exo-dae-model-full"
+    cfg.finetuned_model_artifact_name = "exo-finetuned-model-full"
     return cfg
 
 
