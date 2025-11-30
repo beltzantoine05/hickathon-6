@@ -5,3 +5,4 @@ __pycache__/
 datas/
 temp*
 wandb/
+data/
