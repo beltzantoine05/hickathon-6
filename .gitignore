@@ -5,4 +5,6 @@ __pycache__/
 datas/
 temp*
 wandb/
-data/
+X_test*
+X_train*
+y_train*
