@@ -12,7 +12,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import wandb
-from sklearn.model_selection import KFold, train_test_split
+from sklearn.model_selection import KFold
 
 from .config import PipelineConfig
 from .models import DAE, FlexibleEncoder, MaskedSupervisedRegressor
@@ -467,7 +467,7 @@ class PipelineRunner:
         preprocessor = Preprocessor(cfg.preprocessing)
         X_scaled, mask = preprocessor.fit_transform(X_df)
         train_concat = np.hstack([X_scaled, mask]).astype(np.float32)
-        train_x, val_x, train_y, val_y = train_test_split(train_concat, y.to_numpy(), test_size=cfg.regression.holdout_ratio, random_state=cfg.seed)
+        train_x, val_x, train_y, val_y = train_concat, train_concat, y.to_numpy(), y.to_numpy()
         model = MaskedSupervisedRegressor(self._build_encoder(cfg).to(self.device), latent_dim=cfg.architecture.encoder_layers[-1]).to(self.device)
         if encoder_state is None:
             local_name = "dae_encoder_full.pth"
@@ -515,11 +515,13 @@ class PipelineRunner:
         encoder_state: dict | None = None,
         finetuned_state: dict | None = None,
         preprocessor: Preprocessor | None = None,
+        skip_finetuned: bool = False,
     ) -> None:
         cfg = self.config
         if encoder_state is None:
             encoder_state = self._download_encoder(cfg.encoder_artifact_name)
-        if finetuned_state is None:
+        finetuned_available = not skip_finetuned
+        if finetuned_state is None and not skip_finetuned:
             finetuned_state = self._download_encoder(cfg.finetuned_encoder_artifact_name)
         if preprocessor is None:
             preprocessor = Preprocessor(cfg.preprocessing).fit(X_train_df)
@@ -550,18 +552,39 @@ class PipelineRunner:
             return outputs
 
         base_embeddings = compute_embeddings(encoder_state)
-        finetuned_embeddings = compute_embeddings(finetuned_state)
+        finetuned_embeddings = (
+            compute_embeddings(finetuned_state) if finetuned_available else None
+        )
+
+        def embedding_columns() -> List[str]:
+            latent_dim = self.config.architecture.encoder_layers[-1]
+            run_prefix = self.config.wandb.run_prefix.lower()
+            prefix = self.config.embedding_prefix.lower()
+
+            if "que" in run_prefix or "que" in prefix:
+                base = "QUE_EMBD"
+            elif "exo" in run_prefix or "exo" in prefix:
+                base = "EXO_EMBD"
+            else:
+                base = f"{self.config.embedding_prefix.upper()}"
+
+            return [f"{base}_{i:02d}" for i in range(1, latent_dim + 1)]
+
+        columns = embedding_columns()
 
         def save(embeds: Dict[str, np.ndarray], suffix: str) -> None:
             for split, (_, indices) in concat.items():
                 path = os.path.join(
                     cfg.data_dir, f"{cfg.embedding_prefix}_{suffix}_{split}.csv"
                 )
-                pd.DataFrame(embeds[split], index=indices).to_csv(path)
+                pd.DataFrame(embeds[split], index=indices, columns=columns).to_csv(
+                    path
+                )
                 print(f"[Embeddings] Saved {split} embeddings -> {path}")
 
         save(base_embeddings, "dae_full")
-        save(finetuned_embeddings, "finetuned_full")
+        if finetuned_embeddings is not None:
+            save(finetuned_embeddings, "finetuned_full")
 
     def _download_encoder(self, artifact_name: str) -> dict:
         cfg = self.config
