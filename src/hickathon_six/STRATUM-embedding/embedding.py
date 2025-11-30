@@ -6,7 +6,7 @@ import time
 
 # --- 1. CONFIGURATION GOOGLE ---
 # Colle ta clé commençant par AIza ici
-GOOGLE_API_KEY = "AIzaSyDSu3vIGYdcWQQnmMCmfwTAJAFjHX554WI"
+GOOGLE_API_KEY = "insert-your-free-key-here"
 
 genai.configure(api_key=GOOGLE_API_KEY)
 
