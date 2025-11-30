@@ -12,7 +12,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import wandb
-from sklearn.model_selection import KFold, train_test_split
+from sklearn.model_selection import KFold
 
 from .config import PipelineConfig
 from .models import DAE, FlexibleEncoder, MaskedSupervisedRegressor
@@ -467,7 +467,7 @@ class PipelineRunner:
         preprocessor = Preprocessor(cfg.preprocessing)
         X_scaled, mask = preprocessor.fit_transform(X_df)
         train_concat = np.hstack([X_scaled, mask]).astype(np.float32)
-        train_x, val_x, train_y, val_y = train_test_split(train_concat, y.to_numpy(), test_size=cfg.regression.holdout_ratio, random_state=cfg.seed)
+        train_x, val_x, train_y, val_y = train_concat, train_concat, y.to_numpy(), y.to_numpy()
         model = MaskedSupervisedRegressor(self._build_encoder(cfg).to(self.device), latent_dim=cfg.architecture.encoder_layers[-1]).to(self.device)
         if encoder_state is None:
             local_name = "dae_encoder_full.pth"
