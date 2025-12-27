@@ -1,7 +1,8 @@
 # 🚀 Hi!ckathon 2025 - PISA Score Prediction
 
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue)](https://www.python.org/)
-[![Scikit-Learn](https://img.shields.io/badge/Library-Scikit--Learn-orange)](https://scikit-learn.org/)
+[![Pandas](https://img.shields.io/badge/Library-Pandas-150458?logo=pandas&logoColor=white)](https://pandas.pydata.org/)
+[![AutoGluon](https://img.shields.io/badge/ML-AutoGluon-FFD700?logo=amazonsagemaker&logoColor=black)](https://auto.gluon.ai/)
 [![Hi!Paris](https://img.shields.io/badge/Event-Hi!Paris_Hackathon-purple)](https://www.hi-paris.fr/)
 
 > **Submission for the 6th edition of the Hi!ckathon (2025)**, organized by the Hi!Paris Center (IP Paris - HEC).
